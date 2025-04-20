@@ -14,7 +14,7 @@
     "fb:dev": "node fabrique/actions/cli/build-and-publish.cli.js --mode dev",
     "fb:rc": "node fabrique/actions/cli/build-and-publish.cli.js --mode rc"
   },
-  "description": "https://github.com/xstd-js/flow",
+  "description": "Reimagining the stream interface.",
   "keywords": [],
   "author": "Valentin Richard",
   "license": "MIT",
@@ -24,17 +24,27 @@
     "url": "git+https://github.com/xstd-js/flow.git"
   },
   "devDependencies": {
-    "@types/node": "^22.14.0",
+    "@types/node": "^22.14.1",
     "@vitest/coverage-istanbul": "^3.1.1",
+    "disposablestack": "^1.1.7",
     "prettier": "^3.5.3",
     "prettier-plugin-organize-imports": "^4.1.0",
-    "typedoc": "^0.28.1",
-    "typescript": "5.8.2",
+    "typedoc": "^0.28.2",
+    "typescript": "^5.8.3",
     "vitest": "^3.1.1"
   },
-  "packageManager": "yarn@4.8.1",
+  "packageManager": "yarn@4.9.1",
   "fabrique": {
-    "version": "0.3.5",
+    "version": "0.3.6",
     "type": "lib"
+  },
+  "dependencies": {
+    "@xstd/async-generator": "^0.1.0",
+    "@xstd/async-task": "^0.1.1",
+    "@xstd/block": "^1.0.0",
+    "@xstd/custom-error": "^0.2.0",
+    "@xstd/disposable": "^0.1.0",
+    "@xstd/functional": "^0.2.1",
+    "@xstd/shared-resource": "^0.0.1-dev.1745131031947"
   }
 }

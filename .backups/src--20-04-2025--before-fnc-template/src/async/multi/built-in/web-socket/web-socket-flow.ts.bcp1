@@ -1,0 +1,208 @@
+import { CompleteError, WebSocketError } from '@xstd/custom-error';
+import { SharedProcessusFactory } from '../../../../../../../shared-processus/src/shared-processus-factory.js';
+import { SharedProcessus } from '../../../../../../../shared-processus/src/shared-processus.js';
+import { SyncWriterToAsyncReaderBridge } from '../../../../bridge/sync-writer-to-async-reader-bridge.js';
+import { AsyncReadable } from '../../../read/readable/async-readable.js';
+import { AsyncReader } from '../../../read/reader/async-reader.js';
+import { AsyncWritable } from '../../../write/writable/async-writable.js';
+import { BidirectionalAsyncFlow } from '../../bidirectional-async-flow.js';
+import { untilWebSocketClosed } from './functions/until-web-socket-closed.js';
+import { untilWebSocketOpened } from './functions/until-web-socket-opened.js';
+import { WebSocketReadValue } from './types/web-socket-read-value.js';
+import { WebSocketWriteValue } from './types/web-socket-write-value.js';
+
+export interface WebSocketChannelOptions {
+  readonly protocols?: string | readonly string[];
+}
+
+export class WebSocketFlow extends BidirectionalAsyncFlow<WebSocketReadValue, WebSocketWriteValue> {
+  constructor(url: string | URL, { protocols }: WebSocketChannelOptions = {}) {
+    const sharedWebSocketFactory = new SharedProcessusFactory<WebSocket>(
+      async (signal?: AbortSignal): Promise<SharedProcessus<WebSocket>> => {
+        const webSocket: WebSocket = new WebSocket(url, protocols as string[]);
+        webSocket.binaryType = 'arraybuffer';
+
+        try {
+          await untilWebSocketOpened(webSocket, signal);
+        } catch (error: unknown) {
+          await untilWebSocketClosed(webSocket, signal);
+          throw error;
+        }
+
+        return new SharedProcessus(webSocket, (reason: unknown): void => {
+          if (
+            webSocket.readyState === WebSocket.CONNECTING ||
+            webSocket.readyState === WebSocket.OPEN
+          ) {
+            // TODO await buffer flushed ?
+            if (reason instanceof WebSocketError) {
+              webSocket.close(reason.code, reason.reason);
+            } else {
+              webSocket.close();
+            }
+          }
+        });
+      },
+    );
+
+    let webSocket: WebSocket | undefined;
+    let consumersCount: number = 0;
+
+    const openWebSocket = (): WebSocket => {
+      consumersCount++;
+      if (consumersCount === 1) {
+        try {
+          webSocket = new WebSocket(url, protocols as string[]);
+          webSocket.binaryType = 'arraybuffer';
+        } catch (error: unknown) {
+          webSocket = undefined;
+          consumersCount = 0;
+        }
+      }
+      return webSocket!;
+    };
+
+    const closeWebSocket = (reason?: unknown): boolean => {
+      consumersCount--;
+      if (consumersCount === 0) {
+        if (
+          webSocket!.readyState === WebSocket.CONNECTING ||
+          webSocket!.readyState === WebSocket.OPEN
+        ) {
+          // TODO await buffer flushed ?
+          if (reason instanceof WebSocketError) {
+            webSocket!.close(reason.code, reason.reason);
+          } else {
+            webSocket!.close();
+          }
+        }
+        webSocket = undefined;
+        return true;
+      } else {
+        return false;
+      }
+    };
+
+    super(
+      new AsyncReadable<WebSocketReadValue>((): AsyncReader<WebSocketReadValue> => {
+        const webSocket: WebSocket = openWebSocket();
+
+        const bridge = new SyncWriterToAsyncReaderBridge<WebSocketReadValue>({
+          // TODO options
+          abort: (reason: unknown): void => {
+            cleanUp();
+            closeWebSocket(reason);
+          },
+        });
+
+        console.assert(
+          webSocket.readyState !== WebSocket.CLOSED && webSocket.readyState !== WebSocket.CLOSING,
+        );
+
+        const cleanUp = (): void => {
+          webSocket.removeEventListener('message', onMessage);
+          webSocket.removeEventListener('error', onError);
+          webSocket.removeEventListener('close', onClose);
+        };
+
+        const onMessage = (event: MessageEvent): void => {
+          bridge.writer.next(event.data);
+        };
+
+        const onError = (): void => {
+          cleanUp();
+          closeWebSocket();
+          bridge.writer.abort(new WebSocketError());
+        };
+
+        const onClose = (event: CloseEvent): void => {
+          cleanUp();
+          closeWebSocket();
+
+          if (event.wasClean) {
+            bridge.writer.abort(new CompleteError());
+          } else {
+            bridge.writer.abort(WebSocketError.fromCloseEvent(event));
+          }
+        };
+
+        webSocket.addEventListener('message', onMessage);
+        webSocket.addEventListener('error', onError);
+        webSocket.addEventListener('close', onClose);
+
+        // TODO await websocket is ready
+
+        return bridge.reader;
+      }),
+      new AsyncWritable<WebSocketWriteValue>((): AsyncWritable<WebSocketWriteValue> => {
+        const webSocket: WebSocket = openWebSocket();
+
+        console.assert(
+          webSocket.readyState !== WebSocket.CLOSED && webSocket.readyState !== WebSocket.CLOSING,
+        );
+
+        const cleanUp = (): void => {
+          ctrl.signal.removeEventListener('abort', onAbort);
+          webSocket.removeEventListener('open', onOpen);
+          webSocket.removeEventListener('error', onError);
+          webSocket.removeEventListener('close', onClose);
+        };
+
+        const onOpen = (): void => {
+          webSocket.removeEventListener('open', onOpen);
+
+          ctrl.write({
+            next: (value: WebSocketWriteValue): void => {
+              webSocket.send(value);
+            },
+            complete: (): void => {
+              if (
+                !closeWebSocket(
+                  new WebSocketError({
+                    wasClean: true,
+                    code: 1000,
+                  }),
+                )
+              ) {
+                cleanUp();
+                ctrl.complete();
+              }
+            },
+          });
+        };
+
+        const onError = (): void => {
+          cleanUp();
+          closeWebSocket();
+          ctrl.error(new WebSocketError());
+        };
+
+        const onClose = (event: CloseEvent): void => {
+          cleanUp();
+          closeWebSocket();
+
+          if (event.wasClean) {
+            ctrl.complete();
+          } else {
+            ctrl.error(WebSocketError.fromCloseEvent(event));
+          }
+        };
+
+        const onAbort = (): void => {
+          cleanUp();
+          closeWebSocket(ctrl.signal.reason);
+          ctrl.abort(ctrl.signal.reason);
+        };
+
+        ctrl.signal.addEventListener('abort', onAbort);
+        webSocket.addEventListener('open', onOpen);
+        webSocket.addEventListener('error', onError);
+        webSocket.addEventListener('close', onClose);
+
+        if (webSocket.readyState === WebSocket.OPEN) {
+          onOpen();
+        }
+      }),
+    );
+  }
+}
