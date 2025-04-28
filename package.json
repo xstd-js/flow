@@ -1,6 +1,6 @@
 {
   "name": "@xstd/flow",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "type": "module",
   "main": "./index.js",
   "scripts": {
@@ -24,25 +24,25 @@
     "url": "git+https://github.com/xstd-js/flow.git"
   },
   "devDependencies": {
-    "@types/node": "^22.14.1",
-    "@vitest/coverage-istanbul": "^3.1.1",
+    "@types/node": "^22.15.2",
+    "@vitest/coverage-istanbul": "^3.1.2",
     "disposablestack": "^1.1.7",
     "prettier": "^3.5.3",
     "prettier-plugin-organize-imports": "^4.1.0",
-    "typedoc": "^0.28.2",
+    "typedoc": "^0.28.3",
     "typescript": "^5.8.3",
-    "vitest": "^3.1.1"
+    "vitest": "^3.1.2"
   },
   "packageManager": "yarn@4.9.1",
   "fabrique": {
-    "version": "0.3.6",
+    "version": "0.3.7",
     "type": "lib"
   },
   "dependencies": {
     "@xstd/async-generator": "^0.1.0",
     "@xstd/async-task": "^0.1.1",
     "@xstd/block": "^1.0.0",
-    "@xstd/custom-error": "^0.2.0",
+    "@xstd/custom-error": "^0.2.1-dev.1745580634558",
     "@xstd/disposable": "^0.1.0",
     "@xstd/functional": "^0.2.1",
     "@xstd/shared-resource": "^0.0.1-dev.1745131031947"

@@ -1,0 +1,152 @@
+import { AggregatedError, type AggregatedErrorEntry } from '@xstd/custom-error';
+import { removeDuplicateAbortSignalErrorFromErrors } from '../../../shared/functions/.private/remove-duplicate-abort-signal-error-from-errors.js';
+import { FlowFactory } from '../../base/flow-factory/flow-factory.js';
+import { Flow } from '../../base/flow/flow.js';
+import { FlowCollection } from '../flow-collection/flow-collection.js';
+
+/* TYPES */
+
+export type FlowFactoryCollectionItems<GItems extends object> = {
+  readonly [GKey in keyof GItems]: FlowFactory<any>;
+};
+
+// METHODS
+
+// -> .open(...)
+
+/**
+ * Converts from a `FlowFactoryCollectionItems` to a `FlowCollectionItems`.
+ */
+export type FlowFactoryCollectionItemsToFlowCollectionItems<
+  GItems extends FlowFactoryCollectionItems<GItems>,
+> = {
+  readonly [GKey in keyof GItems]: GItems[GKey] extends FlowFactory<infer GFlow> ? GFlow : never;
+};
+
+// -> .mutate(...)
+
+/**
+ * A mutate function.
+ */
+export interface FlowFactoryCollectionMutateFunction<
+  GSelf extends FlowFactoryCollection<any>,
+  GNewItems extends FlowFactoryCollectionItems<GNewItems>,
+> {
+  (self: GSelf): GNewItems;
+}
+
+/* CLASS */
+
+/**
+ * Represents a collection of `FlowFactories` accessible through a named `key`.
+ *
+ * @experimental
+ */
+export class FlowFactoryCollection<GItems extends FlowFactoryCollectionItems<GItems>> {
+  readonly #items: GItems;
+
+  constructor(items: GItems) {
+    this.#items = items;
+  }
+
+  /* ITEMS */
+
+  get items(): GItems {
+    return this.#items;
+  }
+
+  /* ASYNC FLOW FACTORY LIKE */
+
+  /**
+   * Opens concurrently all the `FlowFactories`.
+   *
+   * Awaits that **all** the `FlowFactories` resolve (fulfilled or rejected), before this Promise is resolved.
+   * In case or error(s), the given signal is aborted, opened `FlowFactories` are closed,
+   * the returned Promise rejects with these errors aggregated.
+   */
+  async open(
+    signal?: AbortSignal,
+  ): Promise<FlowCollection<FlowFactoryCollectionItemsToFlowCollectionItems<GItems>>> {
+    type GMultiFlowItems = FlowFactoryCollectionItemsToFlowCollectionItems<GItems>;
+    type GValue = FlowCollection<GMultiFlowItems>;
+
+    return new Promise<GValue>(
+      (resolve: (value: GValue) => void, reject: (reason?: any) => void): void => {
+        signal?.throwIfAborted();
+
+        const controller: AbortController = new AbortController();
+        const sharedSignal: AbortSignal =
+          signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal]);
+
+        let total: number = 0;
+        let done: number = 0;
+
+        const flowsMap: Record<string, Flow> = {};
+        const errors: AggregatedErrorEntry[] = [];
+
+        const allResolved = (): void => {
+          const filteredErrors: readonly unknown[] = removeDuplicateAbortSignalErrorFromErrors(
+            sharedSignal,
+            errors,
+          );
+
+          const multiFlow = new FlowCollection<GMultiFlowItems>(flowsMap as GMultiFlowItems);
+
+          if (filteredErrors.length > 0) {
+            const error: unknown = new AggregatedError({
+              errors: filteredErrors,
+            }).shorten();
+
+            multiFlow.close().then(
+              (): void => {
+                reject(error);
+              },
+              (_error: unknown): void => {
+                reject(new SuppressedError(_error, error));
+              },
+            );
+          } else {
+            resolve(multiFlow);
+          }
+        };
+
+        const checkAllResolved = (): void => {
+          if (done === total) {
+            allResolved();
+          }
+        };
+
+        const resolveOne = (): void => {
+          done++;
+          checkAllResolved();
+        };
+
+        for (const [key, flowFactory] of Object.entries<FlowFactory<any>>(this.#items)) {
+          total++;
+          flowFactory.open(sharedSignal).then(
+            (flow: Flow): void => {
+              flowsMap[key] = flow;
+              resolveOne();
+            },
+            (error: unknown): void => {
+              errors.push([key, error]);
+              controller.abort();
+              resolveOne();
+            },
+          );
+        }
+
+        checkAllResolved();
+      },
+    );
+  }
+
+  /**
+   * Applies a mutation on this `MultiFlowFactory` and returns another one.
+   */
+  mutate<GNewItems extends FlowFactoryCollectionItems<GNewItems>>(
+    mutateFnc: FlowFactoryCollectionMutateFunction<this, GNewItems>,
+  ): FlowFactoryCollection<GNewItems> {
+    return new FlowFactoryCollection<GNewItems>(mutateFnc(this));
+  }
+}
