@@ -1,0 +1,152 @@
+import { Enum } from './enum/enum.js';
+
+export interface YieldResultNext<GValue> extends Enum<'next'> {
+  readonly value: GValue;
+}
+
+export interface YieldResultError<GError = unknown> extends Enum<'error'> {
+  readonly error: GError;
+}
+
+export interface YieldResultComplete extends Enum<'complete'> {}
+
+export type YieldResult<GValue, GError = unknown> =
+  | YieldResultNext<GValue>
+  | YieldResultError<GError>
+  | YieldResultComplete;
+
+// export function* evalYield<GValue>(): Generator<void, YieldResult<GValue>, GValue> {
+//   // let state: 'none' | 'next' | 'error' = 'none';
+//   let resolved: boolean = false;
+//
+//   try {
+//     const value: GValue = yield;
+//     resolved = true;
+//     return {
+//       type: 'next',
+//       value,
+//     };
+//   } catch (error: unknown) {
+//     resolved = true;
+//     return {
+//       type: 'error',
+//       error,
+//     };
+//   } finally {
+//     if (!resolved) {
+//       return {
+//         type: 'complete',
+//       };
+//     }
+//   }
+// }
+
+// export function evalYield<GValue>(): IterableIterator<void, YieldResult<GValue>, GValue> {
+//   // const iterator: Iterator<void, YieldResult<GValue>, GValue>
+//   let initialized: boolean = false;
+//   let resolved: boolean = false;
+//
+//   return {
+//     next(value: GValue): IteratorResult<void, YieldResult<GValue>> {
+//       if (initialized) {
+//         console.log('next', value);
+//         return {
+//           done: true,
+//           value: {
+//             type: 'next',
+//             value,
+//           },
+//         };
+//       } else {
+//         initialized = true;
+//         return {
+//           done: false,
+//           value: undefined,
+//         };
+//       }
+//     },
+//     return(value?: YieldResult<GValue>): IteratorResult<void, YieldResult<GValue>> {
+//       console.log('complete', value);
+//       return {
+//         done: false,
+//         value: undefined,
+//       };
+//       // return {
+//       //   done: true,
+//       //   value: {
+//       //     type: 'complete',
+//       //   },
+//       // };
+//     },
+//     throw(error?: unknown): IteratorResult<void, YieldResult<GValue>> {
+//       console.log('error', error);
+//       return {
+//         done: true,
+//         value: {
+//           type: 'error',
+//           error,
+//         },
+//       };
+//     },
+//     [Symbol.iterator](): IterableIterator<void, YieldResult<GValue>, GValue> {
+//       return this;
+//     },
+//   };
+// }
+
+// GFunction extends (...args: any[]) => Generator<void, void, any>
+
+export interface WritableGeneratorFunction<GArguments extends readonly any[], GValue> {
+  (...args: GArguments): Generator<void, void, YieldResult<GValue>>;
+}
+
+export interface WritableGeneratorOutFunction<GArguments extends readonly any[], GValue> {
+  (...args: GArguments): Generator<void, void, GValue>;
+}
+
+export function writableGenerator<GArguments extends readonly any[], GValue>(
+  fnc: WritableGeneratorFunction<GArguments, GValue>,
+): WritableGeneratorOutFunction<GArguments, GValue> {
+  return function* (...args: GArguments): Generator<void, void, GValue> {
+    const iterator: Generator<void, void, YieldResult<GValue>> = fnc(...args);
+
+    let result: IteratorResult<void, GValue> = iterator.next();
+
+    while (true) {
+      let resolved: boolean = false;
+
+      try {
+        const value: any = yield;
+        resolved = true;
+        if (
+          iterator.next({
+            type: 'next',
+            value,
+          }).done
+        ) {
+          return;
+        }
+      } catch (error: unknown) {
+        resolved = true;
+        if (
+          iterator.next({
+            type: 'error',
+            error,
+          }).done
+        ) {
+          return;
+        }
+      } finally {
+        if (!resolved) {
+          if (
+            !iterator.next({
+              type: 'complete',
+            }).done
+          ) {
+            continue;
+          }
+        }
+      }
+    }
+  };
+}

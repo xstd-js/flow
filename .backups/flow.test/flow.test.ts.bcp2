@@ -1,0 +1,235 @@
+import { MapFunction } from '@xstd/functional';
+
+/*----------*/
+
+export function isPromiseLike<GValue>(input: unknown): input is PromiseLike<GValue> {
+  return (
+    input !== null && typeof input === 'object' && typeof (input as any)['then'] === 'function'
+  );
+}
+
+/*----------*/
+
+export interface QueuedTask<GReturn> {
+  (): PromiseLike<GReturn> | GReturn;
+}
+
+export class AsyncQueue {
+  #queue: Promise<any>;
+
+  constructor() {
+    this.#queue = Promise.resolve();
+  }
+
+  enqueue<GReturn>(queuedTask: QueuedTask<GReturn>): Promise<GReturn> {
+    return (this.#queue = this.#queue.then(queuedTask, queuedTask));
+  }
+}
+
+/*----------*/
+
+export interface CloseHandle {
+  (reason: unknown): PromiseLike<void> | void;
+}
+
+export interface HandleTask<GReturn> {
+  (signal: AbortSignal): PromiseLike<GReturn> | GReturn;
+}
+
+export class Handle {
+  readonly #close: CloseHandle;
+  readonly #controller: AbortController;
+  readonly #pendingTasks: Set<PromiseLike<any>>;
+  #closePromise: Promise<void> | undefined;
+
+  constructor(close: CloseHandle) {
+    this.#close = close;
+    this.#controller = new AbortController();
+    this.#pendingTasks = new Set<PromiseLike<any>>();
+  }
+
+  async run<GReturn>(task: HandleTask<GReturn>): Promise<GReturn> {
+    this.#controller.signal.throwIfAborted();
+
+    const result: PromiseLike<GReturn> | GReturn = task(this.#controller.signal);
+
+    if (isPromiseLike(result)) {
+      if (this.#pendingTasks.has(result)) {
+        throw new Error('Task already running');
+      }
+      this.#pendingTasks.add(result);
+
+      try {
+        return await result;
+      } finally {
+        this.#pendingTasks.delete(result);
+      }
+    } else {
+      return result;
+    }
+  }
+
+  get closed(): boolean {
+    return this.#controller.signal.aborted;
+  }
+
+  throwIfClosed(): void {
+    this.#controller.signal.throwIfAborted();
+  }
+
+  close(reason?: unknown): Promise<void> {
+    if (!this.#controller.signal.aborted) {
+      this.#controller.abort(reason);
+      this.#closePromise = Promise.allSettled(this.#pendingTasks).then(
+        (): PromiseLike<void> | void => {
+          return this.#close(reason);
+        },
+      );
+    }
+
+    return this.#closePromise!;
+  }
+
+  [Symbol.asyncDispose](): Promise<void> {
+    return this.close();
+  }
+}
+
+/*-----*/
+
+export interface OpenGate<GHandle extends Handle> {
+  (signal?: AbortSignal): PromiseLike<GHandle> | GHandle;
+}
+
+export class Gate<GHandle extends Handle> {
+  readonly #open: OpenGate<GHandle>;
+
+  constructor(open: OpenGate<GHandle>) {
+    this.#open = open;
+  }
+
+  async open(signal?: AbortSignal): Promise<GHandle> {
+    signal?.throwIfAborted();
+    return this.#open(signal);
+  }
+}
+
+/*-----*/
+
+export interface ReadFlow<GValue> {
+  (signal: AbortSignal): PromiseLike<GValue> | GValue;
+}
+
+export class Flow<GValue> extends Handle {
+  readonly #read: ReadFlow<GValue>;
+
+  constructor(read: ReadFlow<GValue>, close: CloseHandle) {
+    super(close);
+    this.#read = read;
+  }
+
+  async read(): Promise<GValue> {
+    return super.run(this.#read);
+  }
+}
+
+/*-----*/
+
+export type SourceModifier = 'queued' | 'map';
+
+export interface SourceOptions {
+  readonly modifiers?: Iterable<SourceModifier>;
+}
+
+export class Source<GValue> extends Gate<Flow<GValue>> {
+  readonly #modifiers: ReadonlySet<SourceModifier>;
+
+  constructor(open: OpenGate<Flow<GValue>>, options?: SourceOptions) {
+    super(open);
+    this.#modifiers =
+      options === undefined
+        ? new Set<SourceModifier>()
+        : options.modifiers instanceof Set
+          ? options.modifiers
+          : new Set<SourceModifier>(options.modifiers);
+  }
+
+  get modifiers(): ReadonlySet<SourceModifier> {
+    return this.#modifiers;
+  }
+
+  queued(): Source<GValue> {
+    return new Source<GValue>(
+      async (signal?: AbortSignal): Promise<Flow<GValue>> => {
+        const flow: Flow<GValue> = await this.open(signal);
+        const queue: AsyncQueue = new AsyncQueue();
+
+        return new Flow<GValue>(
+          (): Promise<GValue> => {
+            return queue.enqueue((): Promise<GValue> => {
+              return flow.read();
+            });
+          },
+          (reason: unknown): Promise<void> => {
+            return flow.close(reason);
+          },
+        );
+      },
+      {
+        modifiers: new Set([...this.#modifiers, 'queued']),
+      },
+    );
+  }
+
+  map<GNewValue>(mapFnc: MapFunction<GValue, GNewValue>): Source<GNewValue> {
+    return new Source<GNewValue>(
+      async (signal?: AbortSignal): Promise<Flow<GNewValue>> => {
+        const flow: Flow<GValue> = await this.open(signal);
+
+        return new Flow<GNewValue>(
+          async (): Promise<GNewValue> => {
+            return mapFnc(await flow.read());
+          },
+          (reason: unknown): Promise<void> => {
+            return flow.close(reason);
+          },
+        );
+      },
+      {
+        modifiers: new Set([...this.#modifiers, 'map']),
+      },
+    );
+  }
+}
+
+export class OrderedSource<GValue, GConstructor extends SourceConstructor> extends Gate<
+  Flow<GValue>
+> {
+  // map<GNewValue>(mapFnc: MapFunction<GValue, GNewValue>): NewSource<GNewValue, GConstructor> {
+  //   return new Source<GNewValue, GConstructor>(async (signal?: AbortSignal): Promise<Flow<GNewValue>> => {
+  //     const flow: Flow<GValue> = await this.open(signal);
+  //
+  //     return new Flow<GNewValue>(
+  //       async (): Promise<GNewValue> => {
+  //         return mapFnc(await flow.read());
+  //       },
+  //       (reason: unknown): Promise<void> => {
+  //         return flow.close(reason);
+  //       },
+  //     );
+  //   });
+  // }
+}
+
+/*-----*/
+
+export interface Sink {
+  (value: unknown): PromiseLike<void> | void;
+}
+
+/*-----*/
+
+export async function debugFlowV2() {
+  const a = new Source<number>(null as any);
+  const b = a.map(() => 8);
+}

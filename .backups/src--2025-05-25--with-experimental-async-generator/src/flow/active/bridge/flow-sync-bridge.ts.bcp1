@@ -1,0 +1,186 @@
+import { listen } from '@xstd/disposable';
+import { PushToPullOptions } from '../../../shared/push-to-pull-options.js';
+import { ActiveFlow } from '../active-flow.js';
+
+/*------*/
+
+interface PendingWrite<GValue> {
+  readonly value: GValue;
+  readonly expirationDate: number;
+}
+
+type FlowSyncBridgeState = 'active' | 'errored' | 'complete';
+
+/*------*/
+
+export interface CloseFlowSyncBridge {
+  (): PromiseLike<void> | void;
+}
+
+export interface FlowSyncBridgeOptions extends PushToPullOptions {
+  // readonly close?: CloseFlowSyncBridge;
+}
+
+export class FlowSyncBridge<GValue> {
+  readonly #bufferSize: number;
+  readonly #windowTime: number;
+  // readonly #close: CloseFlowSyncBridge | undefined;
+
+  readonly #controller: AbortController;
+  readonly #pendingWrites: PendingWrite<GValue>[];
+  #pendingRead: PromiseWithResolvers<void> | undefined;
+
+  #state: FlowSyncBridgeState;
+  #terminalError: unknown;
+
+  readonly #reader: ActiveFlow<GValue>;
+
+  constructor({
+    bufferSize = Number.POSITIVE_INFINITY,
+    windowTime = Number.POSITIVE_INFINITY,
+    // close,
+  }: FlowSyncBridgeOptions = {}) {
+    this.#bufferSize = Math.max(0, bufferSize);
+    this.#windowTime = Math.max(0, windowTime);
+    // this.#close = close;
+    this.#controller = new AbortController();
+    this.#pendingWrites = [];
+    this.#state = 'active';
+
+    const self: this = this;
+
+    this.#reader = new ActiveFlow<GValue>(async function* (
+      signal: AbortSignal,
+    ): AsyncGenerator<GValue, void, void> {
+      // await using stack: AsyncDisposableStack = new AsyncDisposableStack();
+
+      // stack.defer(async (): Promise<void> => {
+      //   if (self.#state === 'active') {
+      //     self.#state = 'complete';
+      //   }
+      //   await self.#close?.();
+      // });
+
+      // stack.use(
+      //   listen(signal, 'abort', (): void => {
+      //     self.#error(signal.reason);
+      //   }),
+      // );
+
+      if (signal.aborted) {
+        self.#error(signal.reason);
+        throw signal.reason;
+      }
+
+      // enter in "error" state when the signal is aborted
+      using _signalListener: Disposable = listen(signal, 'abort', (): void => {
+        self.#error(signal.reason);
+      });
+
+      while (true) {
+        // remove the expired pending writes
+        self.#removeExpiredPendingWrites();
+
+        if (self.#pendingWrites.length > 0) {
+          // └> the _read_ operation occurs **after** the _write_ operation
+
+          // consume and return the oldest pending _write_ operation
+          yield self.#pendingWrites.shift()!.value;
+        } else if (self.#state === 'errored') {
+          throw self.#terminalError;
+        } else if (self.#state === 'complete') {
+          return;
+        } else {
+          // └> the _read_ operation occurs **before** the _write_ operation
+
+          console.assert(self.#pendingRead === undefined);
+
+          // create a promise for the reader that resolves on the next write
+          // and wait for the next _write_ operation to resolve this _read_ operation
+          await (self.#pendingRead = Promise.withResolvers<void>()).promise;
+        }
+      }
+    }, AbortSignal.abort('ok'));
+  }
+
+  #throwIfNotActive(): void {
+    if (this.#state !== 'active') {
+      throw new Error('The flow is not active.');
+    }
+  }
+
+  #removeExpiredPendingWrites(): void {
+    const now: number = Date.now();
+    while (this.#pendingWrites.length > 0) {
+      if (this.#pendingWrites[0].expirationDate < now) {
+        this.#pendingWrites.shift();
+      }
+    }
+  }
+
+  #resolvePendingRead(): void {
+    if (this.#pendingRead !== undefined) {
+      this.#pendingRead.resolve();
+      this.#pendingRead = undefined;
+    }
+  }
+
+  // #error(error: unknown): void {
+  //   this.#throwIfNotActive();
+  //
+  //   this.#state = 'errored';
+  //   this.#terminalError = error;
+  //
+  //   this.#resolvePendingRead();
+  // }
+
+  get active(): boolean {
+    return this.#state === 'active';
+  }
+
+  get reader(): ActiveFlow<GValue> {
+    return this.#reader;
+  }
+
+  next(value: GValue): void {
+    this.#throwIfNotActive();
+
+    if (this.#bufferSize > 0 && this.#windowTime > 0) {
+      this.#pendingWrites.push({
+        value,
+        expirationDate: Date.now() + this.#windowTime,
+      });
+
+      if (this.#pendingWrites.length > this.#bufferSize) {
+        this.#pendingWrites.shift();
+      }
+    } else {
+      if (this.#pendingRead !== undefined) {
+        this.#pendingWrites.push({
+          value,
+          expirationDate: Number.POSITIVE_INFINITY,
+        });
+      }
+    }
+
+    this.#resolvePendingRead();
+  }
+
+  error(error?: unknown): void {
+    this.#throwIfNotActive();
+
+    this.#state = 'errored';
+    this.#controller.abort(error);
+    this.#terminalError = error;
+
+    this.#resolvePendingRead();
+  }
+
+  complete(): void {
+    this.#throwIfNotActive();
+
+    this.#state = 'complete';
+
+    this.#resolvePendingRead();
+  }
+}

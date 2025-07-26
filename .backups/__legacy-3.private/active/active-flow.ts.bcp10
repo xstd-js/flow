@@ -1,0 +1,68 @@
+import { isAsyncGeneratorFunction } from '@xstd/async-generator';
+
+/*--*/
+
+export type FlowIterator<GValue> = Required<
+  Pick<AsyncIterator<GValue, void, void>, 'next' | 'return' | 'throw'>
+>;
+
+export interface FlowFactory<GValue> {
+  (signal: AbortSignal): FlowIterator<GValue>;
+}
+
+/*--*/
+
+export class ActiveFlow<GValue>
+  implements AsyncIterableIterator<GValue, void, void>, AsyncDisposable
+{
+  readonly #controller: AbortController;
+  readonly #iterator: FlowIterator<GValue>;
+
+  /**
+   * INFO:
+   *  - a signal is necessary to abort the flow:
+   *    └> if we don't have one, the flow may get stuck on a `next`,
+   *       and because the `return` is queued, calling `return` won't "break" this flow.
+   *  - we may provide a `null` as the input `signal`:
+   *    └> if so, the _consumer_ **MUST** abort the flow using the `return` or `[Symbol.asyncDispose]` methods.
+   *  - the flow could be aborted early from a `for await (const value of self.open(signal))` (by throwing or returning inside the loop):
+   *    └> thus, we have to implement a `return` that aborts the flow.
+   *  - we have to ensure consistent `try/catch/finally` blocks within the generator:
+   *    └> only the _producer_ can throw/return, not the _consumer_.
+   *    └> when aborting, make sure to abort the signal and exhaust the `next` calls until one throws or completes.
+   */
+  constructor(factory: FlowFactory<GValue>, signal: AbortSignal) {
+    if (!isAsyncGeneratorFunction(factory)) {
+      throw new TypeError('The factory must be an AsyncGenerator function.');
+    }
+
+    this.#controller = new AbortController();
+    this.#iterator = factory(AbortSignal.any([signal, this.#controller.signal]));
+  }
+
+  async next(): Promise<IteratorResult<GValue, void>> {
+    return this.#iterator.next();
+  }
+
+  async abort(reason?: unknown): Promise<void> {
+    this.#controller.abort(reason);
+
+    while (!(await this.#iterator.return()).done);
+  }
+
+  throw(error?: unknown): Promise<IteratorResult<GValue, void>> {
+    return this.#iterator.throw(error);
+  }
+
+  return(): Promise<IteratorResult<GValue, void>> {
+    return this.#iterator.return();
+  }
+
+  [Symbol.asyncIterator](): AsyncIterableIterator<GValue, void, void> {
+    return this;
+  }
+
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.return();
+  }
+}

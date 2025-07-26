@@ -1,0 +1,576 @@
+import { listen } from '@xstd/disposable';
+import { MapFunction } from '@xstd/functional';
+import { describe, test } from 'vitest';
+import { writableGenerator, WritableGeneratorInFunctionReturn } from './shared/generator.js';
+
+/*--------*/
+
+export type FlowIterator<GValue> = Pick<AsyncIterator<GValue, void, void>, 'next'>;
+
+export interface FlowSyncBridge<GValue> {
+  readonly reader: ActiveFlow<GValue>;
+
+  readonly next: (value: GValue) => void;
+  readonly error: (error?: unknown) => void;
+  readonly complete: () => void;
+}
+
+export interface FlowSyncBridgeOptions {
+  readonly bufferSize?: number;
+  readonly windowTime?: number;
+}
+
+export class ActiveFlow<GValue> implements AsyncIterableIterator<GValue, void, void> {
+  static syncBridge<GValue>(
+    signal: AbortSignal,
+    {
+      bufferSize = Number.POSITIVE_INFINITY,
+      windowTime = Number.POSITIVE_INFINITY,
+    }: FlowSyncBridgeOptions = {},
+  ): FlowSyncBridge<GValue> {
+    const pendingWrites: PendingWrite<GValue>[] = [];
+    let pendingRead: PromiseWithResolvers<GValue> | undefined;
+
+    const removeExpiredPendingWrites = (): void => {
+      const now: number = Date.now();
+
+      while (pendingWrites.length > 0 && pendingWrites[0].expirationDate < now) {
+        pendingWrites.shift();
+      }
+    };
+
+
+    const reader: ActiveFlow<GValue> = new ActiveFlow<GValue>((async function* (): AsyncGenerator<
+      GValue,
+      void,
+      void
+    > {
+      signal.throwIfAborted();
+
+      while (true) {
+        removeExpiredPendingWrites();
+
+        if (pendingWrites.length > 0) {
+          // └> the _read_ operation occurs **after** the _write_ operation
+
+          // consume and return the oldest pending _write_ operation
+          yield pendingWrites.shift()!.value;
+
+          signal.throwIfAborted();
+        } else {
+          // └> the _read_ operation occurs **before** the _write_ operation
+
+          console.assert(pendingRead === undefined);
+
+          // create a promise for the reader that resolves on the next write
+          pendingRead = Promise.withResolvers<GValue>();
+
+          using _signalListener = listen(signal, 'abort', (): void => {
+            pendingRead!.reject(signal.reason);
+            pendingRead = undefined;
+          });
+
+          // wait for the next _write_ operation to resolve this _read_ operation
+          yield await pendingRead!.promise;
+        }
+      }
+
+      // if (this.#pendingWrites.length > 0) {
+      //   // └> we have some pending _write_ operations (the _read_ operation occurs after the _write_ operation(s))
+      //
+      //   // consume and return the oldest pending _write_ operation
+      //   const pendingWrite: PendingWrite<GValue> = this.#pendingWrites.shift()!;
+      //   pendingWrite.pending.resolve();
+      //   return pendingWrite.value;
+      // } else {
+      //   // └> we have don't have pending _write_ operations (the _read_ operation occurs before the _write_ operation)
+      //
+      //   this.#writable.throwIfClosed();
+      //
+      //   if (this.#pendingRead === undefined) {
+      //     // └> no _read_ operation is currently in progress (enables concurrent reads)
+      //     // create a promise for the reader that resolves on the next write
+      //     this.#pendingRead = Promise.withResolvers<GValue>();
+      //   }
+      //
+      //   // wait for the next _write_ operation to resolve this _read_ operation
+      //   return await rejectPromiseWhenSignalIsAborted(this.#pendingRead!.promise, signal);
+      // }
+    })());
+
+    const writable: Generator<void, void, GValue> = (function* (): Generator<void, void, GValue> {
+      while (true) {
+        let value: GValue;
+        let resolved: boolean = false;
+
+        try {
+          value = yield;
+          resolved = true;
+        } catch (error: unknown) {
+          resolved = true;
+          if (pendingRead !== undefined) {
+            pendingRead.reject(error);
+            pendingRead = undefined;
+          }
+          throw error;
+        } finally {
+          if (!resolved) {
+            if (pendingRead !== undefined) {
+              pendingRead.reject(DONE);
+              pendingRead = undefined;
+            }
+            return;
+          }
+        }
+
+        signal.throwIfAborted();
+
+        if (pendingRead === undefined) {
+          // └> the _write_ operation occurs **before** the _read_ operation
+
+          if (bufferSize > 0 && windowTime > 0) {
+            // └> queuing is enabled
+
+            removeExpiredPendingWrites();
+
+            // queue this _write_ operation
+            pendingWrites.push({
+              value,
+              expirationDate: Date.now() + windowTime,
+            });
+
+            // remove the oldest _write_ operation if the buffer's size exceeds its maximum
+            if (pendingWrites.length > bufferSize) {
+              pendingWrites.shift();
+            }
+          } else {
+            // └> queuing is disabled
+            throw new Error(
+              'Temping to write data while queuing is disabled and no read operation is pending.',
+            );
+          }
+        } else {
+          // └> the _write_ operation occurs **after** the _read_ operation
+          // resolve the pending read operation
+          pendingRead.resolve(value);
+          pendingRead = undefined;
+        }
+      }
+    })();
+
+
+    writable.next();
+
+    return {
+      writable,
+      readable,
+    };
+  }
+
+  readonly #iterator: FlowIterator<GValue>;
+
+  constructor(iterator: FlowIterator<GValue>) {
+    this.#iterator = iterator;
+  }
+
+  next(): Promise<IteratorResult<GValue, void>> {
+    return this.#iterator.next();
+  }
+
+  [Symbol.asyncIterator](): AsyncIterableIterator<GValue, void, void> {
+    return this;
+  }
+}
+
+/*--------*/
+
+/*--------*/
+
+export interface FlowFactory<GValue> {
+  (signal: AbortSignal): FlowIterator<GValue>;
+}
+
+export interface FlowAsyncBridge<GValue> {
+  readonly writable: AsyncGenerator<void, void, GValue>;
+  readonly readable: AsyncGenerator<GValue, void, void>;
+}
+
+interface PendingWrite<GValue> {
+  readonly value: GValue;
+  readonly expirationDate: number;
+}
+
+export class Flow<GValue> {
+  // static syncBridge<GValue>(
+  //   signal: AbortSignal,
+  //   {
+  //     bufferSize = Number.POSITIVE_INFINITY,
+  //     windowTime = Number.POSITIVE_INFINITY,
+  //   }: FlowSyncBridgeOptions = {},
+  // ): FlowSyncBridge<GValue> {
+  //   const pendingWrites: PendingWrite<GValue>[] = [];
+  //   let pendingRead: PromiseWithResolvers<GValue> | undefined;
+  //
+  //   const removeExpiredPendingWrites = (): void => {
+  //     const now: number = Date.now();
+  //
+  //     while (pendingWrites.length > 0 && pendingWrites[0].expirationDate < now) {
+  //       pendingWrites.shift();
+  //     }
+  //   };
+  //
+  //   const DONE = Symbol('DONE');
+  //
+  //   const writable: Generator<void, void, GValue> = (function* (): Generator<void, void, GValue> {
+  //     while (true) {
+  //       let value: GValue;
+  //       let resolved: boolean = false;
+  //
+  //       try {
+  //         value = yield;
+  //         resolved = true;
+  //       } catch (error: unknown) {
+  //         resolved = true;
+  //         if (pendingRead !== undefined) {
+  //           pendingRead.reject(error);
+  //           pendingRead = undefined;
+  //         }
+  //         throw error;
+  //       } finally {
+  //         if (!resolved) {
+  //           if (pendingRead !== undefined) {
+  //             pendingRead.reject(DONE);
+  //             pendingRead = undefined;
+  //           }
+  //           return;
+  //         }
+  //       }
+  //
+  //       signal.throwIfAborted();
+  //
+  //       if (pendingRead === undefined) {
+  //         // └> the _write_ operation occurs **before** the _read_ operation
+  //
+  //         if (bufferSize > 0 && windowTime > 0) {
+  //           // └> queuing is enabled
+  //
+  //           removeExpiredPendingWrites();
+  //
+  //           // queue this _write_ operation
+  //           pendingWrites.push({
+  //             value,
+  //             expirationDate: Date.now() + windowTime,
+  //           });
+  //
+  //           // remove the oldest _write_ operation if the buffer's size exceeds its maximum
+  //           if (pendingWrites.length > bufferSize) {
+  //             pendingWrites.shift();
+  //           }
+  //         } else {
+  //           // └> queuing is disabled
+  //           throw new Error(
+  //             'Temping to write data while queuing is disabled and no read operation is pending.',
+  //           );
+  //         }
+  //       } else {
+  //         // └> the _write_ operation occurs **after** the _read_ operation
+  //         // resolve the pending read operation
+  //         pendingRead.resolve(value);
+  //         pendingRead = undefined;
+  //       }
+  //     }
+  //   })();
+  //
+  //   const readable: AsyncGenerator<GValue, void, void> = (async function* (): AsyncGenerator<
+  //     GValue,
+  //     void,
+  //     void
+  //   > {
+  //     signal.throwIfAborted();
+  //
+  //     while (true) {
+  //       removeExpiredPendingWrites();
+  //
+  //       if (pendingWrites.length > 0) {
+  //         // └> the _read_ operation occurs **after** the _write_ operation
+  //
+  //         // consume and return the oldest pending _write_ operation
+  //         yield pendingWrites.shift()!.value;
+  //
+  //         signal.throwIfAborted();
+  //       } else {
+  //         // └> the _read_ operation occurs **before** the _write_ operation
+  //
+  //         console.assert(pendingRead === undefined);
+  //
+  //         // create a promise for the reader that resolves on the next write
+  //         pendingRead = Promise.withResolvers<GValue>();
+  //
+  //         using _signalListener = listen(signal, 'abort', (): void => {
+  //           pendingRead!.reject(signal.reason);
+  //           pendingRead = undefined;
+  //         });
+  //
+  //         // wait for the next _write_ operation to resolve this _read_ operation
+  //         yield await pendingRead!.promise;
+  //       }
+  //     }
+  //
+  //     // if (this.#pendingWrites.length > 0) {
+  //     //   // └> we have some pending _write_ operations (the _read_ operation occurs after the _write_ operation(s))
+  //     //
+  //     //   // consume and return the oldest pending _write_ operation
+  //     //   const pendingWrite: PendingWrite<GValue> = this.#pendingWrites.shift()!;
+  //     //   pendingWrite.pending.resolve();
+  //     //   return pendingWrite.value;
+  //     // } else {
+  //     //   // └> we have don't have pending _write_ operations (the _read_ operation occurs before the _write_ operation)
+  //     //
+  //     //   this.#writable.throwIfClosed();
+  //     //
+  //     //   if (this.#pendingRead === undefined) {
+  //     //     // └> no _read_ operation is currently in progress (enables concurrent reads)
+  //     //     // create a promise for the reader that resolves on the next write
+  //     //     this.#pendingRead = Promise.withResolvers<GValue>();
+  //     //   }
+  //     //
+  //     //   // wait for the next _write_ operation to resolve this _read_ operation
+  //     //   return await rejectPromiseWhenSignalIsAborted(this.#pendingRead!.promise, signal);
+  //     // }
+  //   })();
+  //
+  //   writable.next();
+  //
+  //   return {
+  //     writable,
+  //     readable,
+  //   };
+  // }
+
+  // static asyncBridge<GValue>(
+  //   signal: AbortSignal,
+  //   {
+  //     bufferSize = Number.POSITIVE_INFINITY,
+  //     windowTime = Number.POSITIVE_INFINITY,
+  //   }: FlowSyncBridgeOptions = {},
+  // ): FlowBridge<GValue> {
+  //   const pendingWrites: PendingWrite<GValue>[] = [];
+  //   let pendingRead: PromiseWithResolvers<GValue> | undefined;
+  //
+  //   const writable: AsyncGenerator<void, void, GValue> = (async function* (): AsyncGenerator<
+  //     void,
+  //     void,
+  //     GValue
+  //   > {
+  //     signal.throwIfAborted();
+  //
+  //     while (true) {
+  //       const value: GValue = yield;
+  //       signal.throwIfAborted();
+  //
+  //       if (pendingRead === undefined) {
+  //         // └> the _write_ operation occurs before the _read_ operation
+  //
+  //         if (bufferSize > 0 && windowTime > 0) {
+  //           // └> queuing is enabled
+  //
+  //           await using stack: AsyncDisposableStack = new AsyncDisposableStack();
+  //
+  //           const pendingWrite: PendingWrite<GValue> = {
+  //             value,
+  //             pending: Promise.withResolvers<void>(),
+  //           };
+  //
+  //           const reject = (reason: unknown): void => {
+  //             const index: number = pendingWrites.indexOf(pendingWrite);
+  //             if (index === -1) {
+  //               throw new Error('Write not found.');
+  //             }
+  //             pendingWrites.splice(index, 1)[0].pending.reject(reason);
+  //           };
+  //
+  //           stack.use(
+  //             listen(signal, 'abort', (): void => {
+  //               reject(signal.reason);
+  //             }),
+  //           );
+  //
+  //           // queue this _write_ operation
+  //           pendingWrites.push(pendingWrite);
+  //
+  //           // reject the oldest _write_ operation if the buffer's size exceeds its maximum
+  //           if (this.#pendingWrites.length > this.#bufferSize) {
+  //             this.#pendingWrites
+  //               .shift()!
+  //               .pending.reject(new Error('Buffer reached maximum size.'));
+  //           }
+  //
+  //           // register a timeout rejecting the _write_ operation based on `windowTime`
+  //           if (this.#windowTime > 0) {
+  //             stack.use(
+  //               timeout((): void => {
+  //                 reject(new Error('Write expired.'));
+  //               }, this.#windowTime),
+  //             );
+  //           }
+  //
+  //           // wait for the next _read_ operation
+  //           return await pendingWrite.pending.promise;
+  //         } else {
+  //           // └> queuing is disabled
+  //           throw new Error(
+  //             'Temping to write data while queuing is disabled and no read operation is pending.',
+  //           );
+  //         }
+  //       } else {
+  //         // └> the _write_ operation occurs after the _read_ operation
+  //         // resolve the pending read operation
+  //         this.#pendingRead.resolve(value);
+  //         this.#pendingRead = undefined;
+  //       }
+  //     }
+  //   })();
+  //
+  //   const readable: AsyncGenerator<GValue, void, void> = (async function* (): AsyncGenerator<
+  //     GValue,
+  //     void,
+  //     void
+  //   > {
+  //     throw 'TODO';
+  //   })();
+  //
+  //   writable.next().catch((): void => {});
+  //
+  //   return {
+  //     writable,
+  //     readable,
+  //   };
+  // }
+
+  // static when<GEvent extends Event>(
+  //   target: EventTarget,
+  //   type: string,
+  //   options?: PushToPullOptions,
+  // ): Source<GEvent> {
+  //   return new Source<GEvent>((): ReadableFlow<GEvent> => {
+  //     const { writable, readable } = new WritableFlowToReadableFlowBridge<GEvent>({
+  //       ...options,
+  //       close: (reason?: unknown): Promise<void> => {
+  //         stopListener[Symbol.dispose]();
+  //         return writable.close(reason);
+  //       },
+  //     });
+  //
+  //     const stopListener: Disposable = listen(target, type, (event: Event): void => {
+  //       writable.write(event as GEvent).catch((): void => {}); // silent error
+  //     });
+  //
+  //     return readable;
+  //   });
+  // }
+
+  readonly #factory: FlowFactory<GValue>;
+
+  constructor(factory: FlowFactory<GValue>) {
+    this.#factory = factory;
+  }
+
+  open(signal: AbortSignal): ActiveFlow<GValue> {
+    return new ActiveFlow<GValue>(this.#factory(signal));
+  }
+
+  map<GNewValue>(mapFnc: MapFunction<GValue, GNewValue>): Flow<GNewValue> {
+    const self: Flow<GValue> = this;
+    return new Flow<GNewValue>(async function* (signal: AbortSignal): FlowIterator<GNewValue> {
+      for await (const item of self.open(signal)) {
+        yield mapFnc(item);
+      }
+    });
+  }
+}
+
+/*--*/
+
+export interface DrainFlow<GValue> {
+  (flow: Flow<GValue>, signal: AbortSignal): PromiseLike<void> | void;
+}
+
+export class Drain<GValue> {
+  readonly #drain: DrainFlow<GValue>;
+
+  constructor(drain: DrainFlow<GValue>) {
+    this.#drain = drain;
+  }
+
+  async drain(flow: Flow<GValue>, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    return this.#drain(flow, signal);
+  }
+}
+
+/*-------------*/
+
+async function debugFlow00() {
+  const a = async function* (this: any) {
+    console.log(this);
+    yield 1;
+    console.log(this);
+  };
+
+  const it = a();
+  // const it = a.call({ a: 1 });
+  for await (const i of it) {
+    console.log(i);
+  }
+}
+
+async function debugFlow001() {
+  const a = writableGenerator<[], number, boolean, string>(
+    function* (): WritableGeneratorInFunctionReturn<number, boolean, string> {
+      console.log('yield 1', yield true);
+      console.log('yield 2', yield false);
+      console.log('yield 3', yield true);
+      console.log('yield 4', yield false);
+
+      return 'a';
+    },
+  );
+
+  const it = a();
+  console.log('next 0', it.next(0));
+  console.log('next 1', it.next(1));
+  console.log('return - 0', it.return());
+  // it.throw('ok');
+  console.log('next 2', it.next(2));
+  console.log('next 3', it.next(3));
+}
+
+async function debugFlow01() {
+  const controller = new AbortController();
+
+  const flowA = new Flow<number>(async function* () {
+    yield* [0, 1, 2];
+  });
+
+  const flowB = new Flow<number>(async function* (signal: AbortSignal) {
+    yield* flowA.open(signal);
+    signal.throwIfAborted();
+    yield 4;
+  });
+
+  for await (const i of flowB.open(controller.signal)) {
+    console.log(i);
+  }
+}
+
+export async function debugFlow() {
+  // await debugFlow00();
+  await debugFlow001();
+  // await debugFlow01();
+}
+
+describe('abc', () => {
+  test('deg', async () => {
+    await debugFlow();
+  });
+});

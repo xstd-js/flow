@@ -1,0 +1,101 @@
+import { describe, test } from 'vitest';
+
+/*--------*/
+
+export interface FlowFactory<GValue> {
+  (signal: AbortSignal): AsyncGenerator<GValue, void, void>;
+}
+
+/*--------*/
+
+export class FlowReader<GValue> implements AsyncGenerator<GValue, void, void>, AsyncDisposable {
+  readonly #controller: AbortController;
+  readonly #iterator: AsyncGenerator<GValue, void, void>;
+  #closePromise: Promise<void> | undefined;
+
+  constructor(factory: FlowFactory<GValue>) {
+    this.#controller = new AbortController();
+    this.#iterator = factory(this.#controller.signal);
+  }
+
+  next(): Promise<IteratorResult<GValue, void>> {
+    return this.#iterator.next();
+  }
+
+  return(): Promise<IteratorResult<GValue, void>> {
+    return this.#iterator.return();
+  }
+
+  throw(error?: unknown): Promise<IteratorResult<GValue, void>> {
+    return this.#iterator.throw(error);
+  }
+
+  [Symbol.asyncIterator](): AsyncGenerator<GValue, void, void> {
+    return this;
+  }
+
+  // delegate(signal: AbortSignal): AsyncIterable<GValue, void, void> {
+  //   signal.addEventListener('abort', (): void => {
+  //     this.#controller.abort(signal.reason);
+  //   });
+  //   return this;
+  // }
+
+  close(reason?: unknown): Promise<void> {
+    if (this.#closePromise === undefined) {
+      this.#controller.abort(reason);
+      this.#closePromise = (async (): Promise<void> => {
+        while (!(await this.#iterator.return()).done);
+      })();
+    }
+    return this.#closePromise;
+  }
+
+  [Symbol.asyncDispose](): Promise<void> {
+    return this.close();
+  }
+}
+
+export class Flow<GValue> {
+  readonly #factory: FlowFactory<GValue>;
+
+  constructor(factory: FlowFactory<GValue>) {
+    this.#factory = factory;
+  }
+
+  open(): FlowReader<GValue> {
+    return new FlowReader<GValue>(this.#factory);
+  }
+
+  [Symbol.asyncIterator](): AsyncGenerator<GValue, void, void> {
+    return this.open();
+  }
+}
+
+/*-------------*/
+
+export async function debugFlow() {
+  const flowA = new Flow<number>(async function* () {
+    yield* [0, 1, 2];
+  });
+
+  await using flowB = new Flow<number>(async function* (signal: AbortSignal) {
+    yield* flowA.open();
+  }).open();
+
+  const promiseFlow = toPromiseFnc(flow);
+
+  // await using state: AsyncReader<'on' | 'off'> = null as any;
+
+  let result: IteratorResult<number, void>;
+
+  while (!(result = await promiseFlow(FLOW_RESULT_NEXT_VOID)).done) {
+    console.log('state', result.value);
+  }
+}
+
+describe('abc', () => {
+  test('deg', async () => {
+    await debugFlow();
+  });
+});

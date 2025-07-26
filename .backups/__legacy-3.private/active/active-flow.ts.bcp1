@@ -1,0 +1,193 @@
+import { listen } from '@xstd/disposable';
+import { type Enum } from '../../shared/enum/enum.js';
+
+export interface FlowSyncBridge<GValue> {
+  readonly reader: ActiveFlow<GValue>;
+
+  readonly next: FlowSyncBridgeNext<GValue>;
+  readonly error: FlowSyncBridgeError;
+  readonly complete: FlowSyncBridgeComplete;
+}
+
+export interface FlowSyncBridgeNext<GValue> {
+  (value: GValue): void;
+}
+
+export interface FlowSyncBridgeError {
+  (error?: unknown): void;
+}
+
+export interface FlowSyncBridgeComplete {
+  (): void;
+}
+
+interface PendingWriteNext<GValue> extends Enum<'next'> {
+  readonly value: GValue;
+}
+
+interface PendingWriteError extends Enum<'error'> {
+  readonly error: unknown;
+}
+
+interface PendingWriteComplete extends Enum<'complete'> {}
+
+type PendingWrite<GValue> = PendingWriteNext<GValue> | PendingWriteError | PendingWriteComplete;
+
+/*--*/
+
+export type FlowIterator<GValue> = Pick<AsyncIterator<GValue, void, void>, 'next'>;
+
+export interface FlowFactory<GValue> {
+  (signal: AbortSignal): FlowIterator<GValue>;
+}
+
+/*--*/
+
+export class ActiveFlow<GValue> implements AsyncIterableIterator<GValue, void, void> {
+  static syncBridge<GValue>(signal: AbortSignal): FlowSyncBridge<GValue> {
+    const pendingWrites: PendingWrite<GValue>[] = [];
+    let pendingRead: PromiseWithResolvers<void> | undefined;
+    let done: boolean = false;
+
+    const reader: ActiveFlow<GValue> = new ActiveFlow<GValue>(async function* (
+      signal: AbortSignal,
+    ): AsyncGenerator<GValue, void, void> {
+      signal.throwIfAborted();
+
+      while (true) {
+        if (pendingWrites.length > 0) {
+          // └> the _read_ operation occurs **after** the _write_ operation
+
+          // consume and return the oldest pending _write_ operation
+          const pendingWrite: PendingWrite<GValue> = pendingWrites.shift()!;
+
+          if (pendingWrite.type === 'next') {
+            yield pendingWrite.value;
+            signal.throwIfAborted();
+          } else if (pendingWrite.type === 'error') {
+            throw pendingWrite.error;
+          } else {
+            return;
+          }
+        } else {
+          // └> the _read_ operation occurs **before** the _write_ operation
+
+          console.assert(pendingRead === undefined);
+
+          // create a promise for the reader that resolves on the next write
+          pendingRead = Promise.withResolvers<void>();
+
+          // reject the pending read if the signal is aborted
+          using _signalListener = listen(signal, 'abort', (): void => {
+            pendingRead!.reject(signal.reason);
+            pendingRead = undefined;
+          });
+
+          // wait for the next _write_ operation to resolve this _read_ operation
+          await pendingRead!.promise;
+        }
+      }
+    }, signal);
+
+    const write = (pendingWrite: PendingWrite<GValue>): void => {
+      signal.throwIfAborted();
+
+      if (done) {
+        throw new Error('The flow is already done.');
+      }
+
+      done = pendingWrite.type === 'complete' || pendingWrite.type === 'error';
+
+      // queue this _write_ operation
+      pendingWrites.push(pendingWrite);
+
+      if (pendingRead !== undefined) {
+        // └> the _write_ operation occurs **after** the _read_ operation
+        // resolve the pending read operation
+        pendingRead.resolve();
+        pendingRead = undefined;
+      }
+    };
+
+    const next: FlowSyncBridgeNext<GValue> = (value: GValue): void => {
+      write({
+        type: 'next',
+        value,
+      });
+    };
+
+    const error: FlowSyncBridgeError = (error: unknown): void => {
+      write({
+        type: 'error',
+        error,
+      });
+    };
+
+    const complete: FlowSyncBridgeComplete = (): void => {
+      write({
+        type: 'complete',
+      });
+    };
+
+    return {
+      reader,
+      next,
+      error,
+      complete,
+    };
+  }
+
+  readonly #controller: AbortController;
+  readonly #iterator: FlowIterator<GValue>;
+
+  constructor(factory: FlowFactory<GValue>, signal: AbortSignal) {
+    this.#controller = new AbortController();
+
+    const sharedSignal: AbortSignal = AbortSignal.any([signal, this.#controller.signal]);
+
+    this.#iterator = factory(sharedSignal);
+
+    signal.addEventListener(
+      'abort',
+      (): void => {
+        void this.#abort(signal.reason);
+      },
+      {
+        signal: sharedSignal,
+      },
+    );
+  }
+
+  async #abort(reason: unknown): Promise<void> {
+    try {
+      while (!(await this.#iterator.next()).done);
+    } catch (error: unknown) {
+      if (error !== reason) {
+        reportError(error);
+      }
+    }
+  }
+
+  async next(): Promise<IteratorResult<GValue, void>> {
+    try {
+      const result: IteratorResult<GValue, void> = await this.#iterator.next();
+
+      if (result.done) {
+        this.#controller.abort();
+      }
+
+      return result;
+    } catch (error: unknown) {
+      this.#controller.abort();
+      throw error;
+    }
+  }
+
+  return(): Promise<IteratorResult<GValue, void>> {
+    return this.next();
+  }
+
+  [Symbol.asyncIterator](): AsyncIterableIterator<GValue, void, void> {
+    return this;
+  }
+}

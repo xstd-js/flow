@@ -1,0 +1,460 @@
+import { CompleteError } from '@xstd/custom-error';
+import { listen } from '@xstd/disposable';
+
+export interface FlowSyncBridge<GValue, GData> {
+  readonly reader: ActiveFlow<GValue>;
+
+  readonly isActive: FlowSyncBridgeIsActive;
+  readonly next: FlowSyncBridgeNext<GValue, GData>;
+  readonly error: FlowSyncBridgeError;
+  readonly complete: FlowSyncBridgeComplete;
+}
+
+export interface FlowSyncBridgeIsActive {
+  (): boolean;
+}
+
+export interface FlowSyncBridgeNext<GValue, GData> {
+  (value: GValue, data: GData): void;
+}
+
+export interface FlowSyncBridgeError {
+  (error?: unknown): void;
+}
+
+export interface FlowSyncBridgeComplete {
+  (): void;
+}
+
+// interface PendingWriteNext<GValue> extends Enum<'next'> {
+//   readonly value: GValue;
+// }
+//
+// interface PendingWriteError extends Enum<'error'> {
+//   readonly error: unknown;
+// }
+//
+// interface PendingWriteComplete extends Enum<'complete'> {}
+
+// type PendingWrite<GValue> = PendingWriteNext<GValue> | PendingWriteError | PendingWriteComplete;
+
+interface PendingWrite<GValue, GData> {
+  readonly value: GValue;
+  readonly data: GData;
+}
+
+export interface IsPendingWriteExpired<GValue, GData> {
+  (value: GValue, data: GData): boolean;
+}
+
+/*--*/
+
+export type FlowIterator<GValue> = Pick<AsyncIterator<GValue, void, void>, 'next'>;
+
+export interface FlowFactory<GValue> {
+  (signal: AbortSignal): FlowIterator<GValue>;
+}
+
+/*--*/
+
+export class ActiveFlow<GValue>
+  implements AsyncIterableIterator<GValue, void, void>, AsyncDisposable
+{
+  static syncBridge<GValue, GData>(
+    signal: AbortSignal | null,
+    isExpired: IsPendingWriteExpired<GValue, GData> = (): boolean => false,
+  ): FlowSyncBridge<GValue, GData> {
+    const pendingWrites: PendingWrite<GValue, GData>[] = [];
+    let pendingRead: PromiseWithResolvers<void> | undefined;
+
+    let state: 'active' | 'errored' | 'complete' = 'active';
+    let flowError: unknown;
+
+    const throwIfNotActive = (): void => {
+      if (state !== 'active') {
+        throw new Error('The flow is not active.');
+      }
+    };
+
+    const resolvePendingRead = (): void => {
+      if (pendingRead !== undefined) {
+        pendingRead.resolve();
+        pendingRead = undefined;
+      }
+    };
+
+    const enterErrorState = (error: unknown): void => {
+      throwIfNotActive();
+
+      state = 'errored';
+      flowError = error;
+
+      resolvePendingRead();
+    };
+
+    // const rejectPendingRead = (reason: unknown): void => {
+    //   if (pendingRead !== undefined) {
+    //     pendingRead.reject(reason);
+    //     pendingRead = undefined;
+    //   }
+    // };
+
+    return {
+      reader: new ActiveFlow<GValue>(async function* (
+        signal: AbortSignal,
+      ): AsyncGenerator<GValue, void, void> {
+        if (signal.aborted) {
+          enterErrorState(signal.reason);
+          throw signal.reason;
+        }
+
+        // enter in "error" state when the signal is aborted
+        using _signalListener = listen(signal, 'abort', enterErrorState);
+
+        while (true) {
+          // remove expired pending writes until we find one valid
+          while (pendingWrites.length > 0) {
+            const { value, data }: PendingWrite<GValue, GData> = pendingWrites[0];
+
+            if (isExpired(value, data)) {
+              pendingWrites.shift();
+            }
+          }
+
+          if (pendingWrites.length > 0) {
+            // └> the _read_ operation occurs **after** the _write_ operation
+
+            // consume and return the oldest pending _write_ operation
+            const pendingWrite: PendingWrite<GValue, GData> = pendingWrites.shift()!;
+
+            yield pendingWrite.value;
+          } else if (state === 'errored') {
+            throw flowError;
+          } else if (state === 'complete') {
+            return;
+          } else {
+            // └> the _read_ operation occurs **before** the _write_ operation
+
+            console.assert(pendingRead === undefined);
+
+            // create a promise for the reader that resolves on the next write
+            pendingRead = Promise.withResolvers<void>();
+
+            // reject the pending read if the signal is aborted
+            using _signalListener = listen(signal, 'abort', (): void => {
+              rejectPendingRead(pendingRead);
+            });
+
+            // wait for the next _write_ operation to resolve this _read_ operation
+            await pendingRead!.promise;
+          }
+        }
+      }, signal),
+      isActive: (): boolean => {
+        return state === 'active';
+      },
+      next: (value: GValue, data: GData): void => {
+        throwIfNotActive();
+
+        pendingWrites.push({
+          value,
+          data,
+        });
+
+        resolvePendingRead();
+      },
+      error: (error: unknown): void => {
+        throwIfNotActive();
+
+        state = 'errored';
+        flowError = error;
+
+        resolvePendingRead();
+      },
+      complete: (): void => {
+        throwIfNotActive();
+
+        state = 'complete';
+
+        resolvePendingRead();
+      },
+    };
+  }
+
+  readonly #controller: AbortController;
+  readonly #iterator: FlowIterator<GValue>;
+  #queue: Promise<any>;
+
+  #done: boolean;
+  // #state: 'running' | 'aborted' | 'complete';
+  // #abortPromise: Promise<void> | undefined;
+
+  /**
+   * INFO:
+   *  - a signal is necessary to abort the flow:
+   *    └> if we don't have one, the flow may get stuck on a `next`,
+   *       and because the `return` is queued, calling `return` won't "break" this flow.
+   *  - we may provide a `null` as the input `signal`:
+   *    └> if so, the _consumer_ **MUST** abort the flow using the `return` or `[Symbol.asyncDispose]` methods.
+   *  - the flow could be aborted early from a `for await (const value of self.open(signal))` (by throwing or returning inside the loop):
+   *    └> thus, we have to implement a `return` that aborts the flow.
+   *  - we have to ensure consistent `try/catch/finally` blocks within the generator:
+   *    └> only the _producer_ can throw/return, not the _consumer_.
+   *    └> when aborting, make sure to abort the signal and exhaust the `next` calls until one throws or completes.
+   */
+  constructor(factory: FlowFactory<GValue>, signal: AbortSignal | null) {
+    this.#controller = new AbortController();
+    this.#iterator = factory(this.#controller.signal);
+    this.#queue = Promise.resolve();
+    this.#done = false;
+
+    if (signal !== null) {
+      if (signal.aborted) {
+        this.abort(signal.reason).catch(reportError);
+      } else {
+        signal.addEventListener(
+          'abort',
+          (): void => {
+            this.abort(signal.reason).catch(reportError);
+          },
+          {
+            signal: this.#controller.signal,
+          },
+        );
+      }
+    }
+  }
+
+  abort(reason?: unknown): Promise<void> {
+    if (!this.#done) {
+      this.#done = 'aborted';
+      this.#controller.abort(reason);
+
+      this.#queue = this.#queue.then(() => {});
+    }
+
+    // try {
+    //   while (!(await this.#iterator.next()).done);
+    // } catch (error: unknown) {
+    //   if (error !== reason) {
+    //     throw error;
+    //   }
+    // }
+
+    // try {
+    //   await this.#iterator.next();
+    //   reportError(new Error('A flow must throw when its signal is aborted.'));
+    // } catch (error: unknown) {
+    //   if (error !== reason) {
+    //     reportError(new Error('A flow must throw with signal.reason when its signal is aborted.'));
+    //   }
+    // }
+    //
+    // try {
+    //   while (!(await this.#iterator.next()).done);
+    // } catch (error: unknown) {
+    //   if (error !== reason) {
+    //     throw error;
+    //   }
+    // }
+  }
+
+  next(): Promise<IteratorResult<GValue, void>> {
+    return (this.#queue = this.#queue.then(
+      (): Promise<IteratorResult<GValue, void>> | IteratorResult<GValue, void> => {
+        if (this.#done) {
+          if (this.#controller.signal.aborted) {
+            throw this.#controller.signal.reason;
+          }
+
+          return {
+            done: true,
+            value: undefined,
+          };
+        } else {
+          return this.#iterator.next().then(
+            (result: IteratorResult<GValue, void>): IteratorResult<GValue, void> => {
+              if (result.done) {
+                if (this.#done) {
+                  // aborted while resolving
+                  if (this.#controller.signal.aborted) {
+                    throw this.#controller.signal.reason;
+                  } else {
+                    throw new Error('A flow must throw when its signal is aborted.');
+                  }
+                } else {
+                  this.#done = true;
+                  this.#controller.abort(new CompleteError());
+                }
+              }
+              return result;
+            },
+            (error: unknown): never => {
+              this.#done = true;
+              this.#controller.abort(error);
+              throw error;
+            },
+          );
+        }
+      },
+    ));
+  }
+
+  // next(): Promise<IteratorResult<GValue, void>> {
+  //   return new Promise<IteratorResult<GValue>>(
+  //     (resolve: (value: IteratorResult<GValue>) => void, reject: (reason?: any) => void): void => {
+  //       this.#queue = this.#queue.then((): Promise<void> | void => {
+  //         if (this.#state === 'running') {
+  //           return this.#iterator.next().then(
+  //             (result: IteratorResult<GValue, void>): void => {
+  //               if (this.#state === 'aborted') {
+  //                 // TODO
+  //                 reject(this.#controller.signal.reason);
+  //               } else {
+  //                 if (result.done) {
+  //                   this.#state = 'complete';
+  //                   this.#controller.abort(new CompleteError());
+  //                 }
+  //                 resolve(result);
+  //               }
+  //             },
+  //             (error: unknown): void => {
+  //               if (this.#state === 'aborted') {
+  //                 // TODO
+  //                 reject(this.#controller.signal.reason);
+  //               } else {
+  //                 this.#state = 'errored';
+  //                 this.#controller.abort(error);
+  //                 reject(error);
+  //               }
+  //             },
+  //           );
+  //         } else if (this.#state === 'aborted') {
+  //           reject(this.#controller.signal.reason);
+  //         } else if (this.#state === 'errored') {
+  //           reject(this.#controller.signal.reason);
+  //         } /* if (this.#state === 'complete') */ else {
+  //           resolve({
+  //             done: true,
+  //             value: undefined,
+  //           });
+  //         }
+  //       });
+  //     },
+  //   );
+  //   // return this.#iterator.next().then(
+  //   //   (result: IteratorResult<GValue, void>): IteratorResult<GValue, void> => {
+  //   //     if (this.#state === 'running') {
+  //   //       if (result.done) {
+  //   //         this.#complete();
+  //   //       }
+  //   //     } else if (this.#state === 'aborted') {
+  //   //       reportError(new Error('A flow must throw when its signal is aborted.'));
+  //   //     } else if (this.#state === 'errored') {
+  //   //       reportError(new Error('A flow must throw if it was previously errored.'));
+  //   //     } /* if (this.#state === 'complete') */ else {
+  //   //       if (!result.done) {
+  //   //         reportError(
+  //   //           new Error(
+  //   //             'A flow must return a done `IteratorResult` if it was previously complete.',
+  //   //           ),
+  //   //         );
+  //   //       }
+  //   //     }
+  //   //
+  //   //     return result;
+  //   //   },
+  //   //   (error: unknown): never => {
+  //   //     if (this.#state === 'running') {
+  //   //       this.#error(error);
+  //   //     }
+  //   //     throw error;
+  //   //   },
+  //   // );
+  //
+  //   // return (this.#queue = this.#queue.then(
+  //   //   (): Promise<IteratorResult<GValue, void>> | IteratorResult<GValue, void> => {
+  //   //     if (this.#state === 'errored') {
+  //   //       throw this.#controller.signal.reason;
+  //   //     } else if (this.#state === 'complete') {
+  //   //       return {
+  //   //         done: true,
+  //   //         value: undefined,
+  //   //       };
+  //   //     } else {
+  //   //       return this.#iterator.next().then(
+  //   //         (result: IteratorResult<GValue, void>): IteratorResult<GValue, void> => {
+  //   //           if (result.done) {
+  //   //             this.#complete();
+  //   //           }
+  //   //           return result;
+  //   //         },
+  //   //         (error: unknown): never => {
+  //   //           this.#error(error);
+  //   //           throw error;
+  //   //         },
+  //   //       );
+  //   //     }
+  //   //   },
+  //   // ));
+  // }
+
+  // next(): Promise<IteratorResult<GValue, void>> {
+  //   return (this.#queue = this.#queue.then(
+  //     (): Promise<IteratorResult<GValue, void>> | IteratorResult<GValue, void> => {
+  //       if (this.#state === 'errored') {
+  //         throw this.#controller.signal.reason;
+  //       } else if (this.#state === 'complete') {
+  //         return {
+  //           done: true,
+  //           value: undefined,
+  //         };
+  //       } else {
+  //         return this.#iterator.next().then(
+  //           (result: IteratorResult<GValue, void>): IteratorResult<GValue, void> => {
+  //             if (result.done) {
+  //               this.#complete();
+  //             }
+  //             return result;
+  //           },
+  //           (error: unknown): never => {
+  //             this.#error(error);
+  //             throw error;
+  //           },
+  //         );
+  //       }
+  //     },
+  //   ));
+  // }
+
+  // async next(): Promise<IteratorResult<GValue, void>> {
+  //   try {
+  //     const result: IteratorResult<GValue, void> = await this.#iterator.next();
+  //
+  //     if (result.done) {
+  //       this.#controller.abort(new CompleteError());
+  //     }
+  //
+  //     return result;
+  //   } catch (error: unknown) {
+  //     this.#controller.abort(error);
+  //     throw error;
+  //   }
+  // }
+
+  async return(): Promise<IteratorResult<GValue, void>> {
+    await this.abort(new CompleteError());
+    return {
+      done: true,
+      value: undefined,
+    };
+  }
+
+  [Symbol.asyncIterator](): AsyncIterableIterator<GValue, void, void> {
+    return this;
+  }
+
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.abort();
+  }
+}

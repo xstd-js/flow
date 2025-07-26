@@ -790,6 +790,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@xstd/abortable@npm:^1.2.0":
+  version: 1.2.0
+  resolution: "@xstd/abortable@npm:1.2.0"
+  checksum: 10c0/0ab951129e7ac813ce5b46c9b700d487503e38841af3a300152071974756202fa630aef9be4c8f18f547d6f5f79ae57d84d677ce0b1a154b24dc4c1c84f1091c
+  languageName: node
+  linkType: hard
+
 "@xstd/async-generator@npm:^0.1.0":
   version: 0.1.0
   resolution: "@xstd/async-generator@npm:0.1.0"
@@ -841,10 +848,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@xstd/disposable@npm:^0.1.0":
-  version: 0.1.0
-  resolution: "@xstd/disposable@npm:0.1.0"
-  checksum: 10c0/c181dfefcf5a345a2aa7424ca2129351db357f15f4e3d1dd1eb8a2de4e2cd838bd610d3a2ce02c4dd0c67a819c468d2f817f40c0b8d1e05a9293dbc050cec91f
+"@xstd/disposable@npm:^0.1.1":
+  version: 0.1.1
+  resolution: "@xstd/disposable@npm:0.1.1"
+  checksum: 10c0/fe1304591fa7bdb90ab1dc0c3372739f1f916d47486860163b9d384f6b2d0e5ac885e1a159b474664643570398f9575ac3a560df5c9a6f747f53bc2333f5c5b2
   languageName: node
   linkType: hard
 
@@ -854,12 +861,12 @@ __metadata:
   dependencies:
     "@types/node": "npm:^22.15.2"
     "@vitest/coverage-istanbul": "npm:^3.1.2"
+    "@xstd/abortable": "npm:^1.2.0"
     "@xstd/async-generator": "npm:^0.1.0"
     "@xstd/async-task": "npm:^0.1.1"
-    "@xstd/block": "npm:^1.0.0"
     "@xstd/custom-error": "npm:^0.2.1-dev.1745580634558"
-    "@xstd/disposable": "npm:^0.1.0"
-    "@xstd/functional": "npm:^0.2.1"
+    "@xstd/disposable": "npm:^0.1.1"
+    "@xstd/functional": "npm:^0.2.2"
     "@xstd/shared-resource": "npm:^0.0.1-dev.1745131031947"
     disposablestack: "npm:^1.1.7"
     prettier: "npm:^3.5.3"
@@ -877,10 +884,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@xstd/functional@npm:^0.2.1":
-  version: 0.2.1
-  resolution: "@xstd/functional@npm:0.2.1"
-  checksum: 10c0/2659d42ac211c8372b1277a829bd23f6d33334b290710f0ff488888c2217fb89bd31960d8d8266a86fe3064fe9d10a5574ebeaa703ce5d93e793bc937ea13818
+"@xstd/functional@npm:^0.2.2":
+  version: 0.2.2
+  resolution: "@xstd/functional@npm:0.2.2"
+  checksum: 10c0/c76ee71fd12b937edf96f09a1c188bebb4a10e0a2039e32531b6929cc34dfc3d043c6c456f78a7ae3821ab194edd93638742456fe0568bdeaa59767cf971d3d6
   languageName: node
   linkType: hard
 

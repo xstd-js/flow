@@ -1,0 +1,241 @@
+import { MapFunction } from '@xstd/functional';
+import { isPromiseLike } from './shared/functions/.private/is-promise-like.js';
+
+// export type AsyncActionArguments<GArguments extends readonly any[]> = [
+//   ...args: GArguments,
+//   signal?: AbortSignal,
+// ];
+
+/*--------*/
+
+export type AsyncTaskArguments<GArguments extends readonly any[]> = [
+  ...GArguments,
+  signal?: AbortSignal,
+];
+
+export function inspectAsyncTaskArguments<GArguments extends readonly any[]>(
+  args: AsyncTaskArguments<GArguments>,
+): [args: GArguments, signal: AbortSignal | undefined] {
+  return (
+    args.length > 0 && args[args.length - 1] instanceof AbortSignal
+      ? [args.slice(0, -1), args[args.length - 1]]
+      : [args, undefined]
+  ) as any;
+}
+
+/*--------*/
+
+export interface AsyncActionInvokeFunction<GArguments extends readonly any[], GReturn> {
+  (...args: [...GArguments, signal: AbortSignal]): PromiseLike<GReturn> | GReturn;
+}
+
+export interface AsyncActionCloseFunction {
+  (reason: unknown): PromiseLike<void> | void;
+}
+
+export class AsyncAction<GArguments extends readonly any[], GReturn> implements AsyncDisposable {
+  readonly #invoke: AsyncActionInvokeFunction<GArguments, GReturn>;
+  readonly #close: AsyncActionCloseFunction;
+  readonly #controller: AbortController;
+  readonly #pendingTasks: Set<PromiseLike<any>>;
+  #closePromise: Promise<void> | undefined;
+
+  constructor(
+    invoke: AsyncActionInvokeFunction<GArguments, GReturn>,
+    close: AsyncActionCloseFunction,
+  ) {
+    this.#invoke = invoke;
+    this.#close = close;
+    this.#controller = new AbortController();
+    this.#pendingTasks = new Set<PromiseLike<any>>();
+  }
+
+  async invoke(...args: AsyncTaskArguments<GArguments>): Promise<GReturn> {
+    // let _args: GArguments;
+    // let _signal: AbortSignal;
+    //
+    // if (args.length > 0 && args[args.length - 1] instanceof AbortSignal) {
+    //   _args = args.slice(0, -1) as unknown as GArguments;
+    //   _signal = AbortSignal.any([this.#controller.signal, args[args.length - 1] as AbortSignal]);
+    // } else {
+    //   _args = args as unknown as GArguments;
+    //   _signal = this.#controller.signal;
+    // }
+
+    const [_args, _signal] = inspectAsyncTaskArguments<GArguments>(args);
+
+    const sharedSignal: AbortSignal =
+      _signal === undefined
+        ? this.#controller.signal
+        : AbortSignal.any([this.#controller.signal, _signal]);
+
+    sharedSignal.throwIfAborted();
+
+    const result: PromiseLike<GReturn> | GReturn = this.#invoke(..._args, sharedSignal);
+
+    if (isPromiseLike(result)) {
+      if (this.#pendingTasks.has(result)) {
+        throw new Error('Task already running');
+      }
+      this.#pendingTasks.add(result);
+
+      try {
+        return await result;
+      } finally {
+        this.#pendingTasks.delete(result);
+      }
+    } else {
+      return result;
+    }
+  }
+
+  get closed(): boolean {
+    return this.#controller.signal.aborted;
+  }
+
+  throwIfClosed(): void {
+    this.#controller.signal.throwIfAborted();
+  }
+
+  close(reason?: unknown): Promise<void> {
+    if (!this.#controller.signal.aborted) {
+      this.#controller.abort(reason);
+      this.#closePromise = Promise.allSettled(this.#pendingTasks).then(
+        (): PromiseLike<void> | void => {
+          return this.#close(reason);
+        },
+      );
+    }
+
+    return this.#closePromise!;
+  }
+
+  [Symbol.asyncDispose](): Promise<void> {
+    return this.close();
+  }
+}
+
+/*---*/
+
+export interface AsyncActionFactoryOpenFunction<
+  GArguments extends readonly any[],
+  GAsyncAction extends AsyncAction<any, any>,
+> {
+  (...args: AsyncTaskArguments<GArguments>): PromiseLike<GAsyncAction> | GAsyncAction;
+}
+
+export class AsyncActionFactory<
+  GArguments extends readonly any[],
+  GAsyncAction extends AsyncAction<any, any>,
+> {
+  readonly #open: AsyncActionFactoryOpenFunction<GArguments, GAsyncAction>;
+
+  constructor(open: AsyncActionFactoryOpenFunction<GArguments, GAsyncAction>) {
+    this.#open = open;
+  }
+
+  async open(...args: AsyncTaskArguments<GArguments>): Promise<GAsyncAction> {
+    inspectAsyncTaskArguments<GArguments>(args)[1]?.throwIfAborted();
+    return this.#open(...args);
+  }
+}
+
+/*-------------*/
+
+export class AsyncReader<GValue> extends AsyncAction<[], GValue> {
+  read(signal?: AbortSignal): Promise<GValue> {
+    return this.invoke(signal);
+  }
+}
+
+export class AsyncReadable<GValue> extends AsyncActionFactory<[], AsyncReader<GValue>> {
+  // map<GNewValue>(mapFnc: MapFunction<GValue, GNewValue>): AsyncReadable<GNewValue> {
+  //   return new AsyncReadable<GValue>();
+  // }
+}
+
+/*-------------*/
+
+export class AsyncWriter<GValue> extends AsyncAction<[value: GValue], void> {
+  write(value: GValue, signal?: AbortSignal): Promise<void> {
+    return this.invoke(value, signal);
+  }
+}
+
+export class AsyncWritable<GValue> extends AsyncActionFactory<[], AsyncWriter<GValue>> {
+  // map<GNewValue>(mapFnc: MapFunction<GValue, GNewValue>): AsyncReadable<GNewValue> {
+  //   return new AsyncReadable<GValue>();
+  // }
+}
+
+/*-------------*/
+
+export class AsyncObserver<GValue> extends AsyncAction<[], GValue> {
+  constructor(invoke: AsyncActionInvokeFunction<[], GValue>, close: AsyncActionCloseFunction) {
+    let queue: Promise<any> = Promise.resolve();
+    super((signal: AbortSignal): Promise<GValue> => {
+      return (queue = queue.then((): PromiseLike<GValue> | GValue => {
+        signal.throwIfAborted();
+        return invoke(signal);
+      }));
+    }, close);
+  }
+
+  next(signal?: AbortSignal): Promise<GValue> {
+    return this.invoke(signal);
+  }
+}
+
+export interface AsyncObservableOptions {
+  readonly bufferSize?: number;
+  readonly windowTime?: number;
+}
+
+export class AsyncObservable<GValue> extends AsyncActionFactory<
+  [options?: AsyncObservableOptions],
+  AsyncObserver<GValue>
+> {
+  map<GNewValue>(mapFnc: MapFunction<GValue, GNewValue>): AsyncObservable<GNewValue> {
+    return new AsyncObservable<GNewValue>(
+      async (
+        options?: AsyncObservableOptions,
+        signal?: AbortSignal,
+      ): Promise<AsyncObserver<GNewValue>> => {
+        const observer: AsyncObserver<GValue> = await this.open(options, signal);
+
+        return new AsyncObserver<GNewValue>(
+          async (signal: AbortSignal): Promise<GNewValue> => {
+            return mapFnc(await observer.invoke(signal));
+          },
+          (reason: unknown): Promise<void> => {
+            return observer.close(reason);
+          },
+        );
+      },
+    );
+  }
+}
+
+/*-------------*/
+
+export interface ThingProperty<GValue> {
+  readonly readable?: AsyncReadable<GValue>;
+  readonly writable?: AsyncWritable<GValue>;
+  readonly observable?: AsyncObservable<GValue>;
+}
+
+// export interface ThingProperty<GValue> {
+//   get(): AsyncAction<[], GValue>;
+//   set(): AsyncAction<[GValue], void>;
+//   observe(): AsyncAction<[], GValue>;
+// }
+
+/*-------------*/
+
+export async function debugFlow() {
+  await using state: AsyncReader<'on' | 'off'> = null as any;
+
+  while (true) {
+    console.log('state', await state.read());
+  }
+}

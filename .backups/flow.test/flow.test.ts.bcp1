@@ -1,0 +1,142 @@
+import { ReadableFlow } from './flow/read/readable-flow/readable-flow.js';
+
+/*----------*/
+
+export interface QueuedTask<GReturn> {
+  (): PromiseLike<GReturn> | GReturn;
+}
+
+export class AsyncQueue {
+  #queue: Promise<any>;
+
+  constructor() {
+    this.#queue = Promise.resolve();
+  }
+
+  enqueue<GReturn>(queuedTask: QueuedTask<GReturn>): Promise<GReturn> {
+    return (this.#queue = this.#queue.then(
+      (): PromiseLike<GReturn> | GReturn => {
+        return queuedTask();
+      },
+      (): PromiseLike<GReturn> | GReturn => {
+        return queuedTask();
+      },
+    ));
+  }
+}
+
+/*----------*/
+
+export interface CloseHandle {
+  (reason: unknown): PromiseLike<void> | void;
+}
+
+export interface HandleTask<GReturn> {
+  (signal: AbortSignal): PromiseLike<GReturn> | GReturn;
+}
+
+export class Handle {
+  readonly #close: CloseHandle;
+  readonly #controller: AbortController;
+  readonly #pendingTasks: Set<PromiseLike<any>>;
+
+  constructor(close: CloseHandle) {
+    this.#close = close;
+    this.#controller = new AbortController();
+    this.#pendingTasks = new Set<PromiseLike<any>>();
+  }
+
+  async run<GReturn>(task: HandleTask<GReturn>): Promise<GReturn> {
+    this.#controller.signal.throwIfAborted();
+
+    const result: PromiseLike<GReturn> | GReturn = task(this.#controller.signal);
+
+    if (isPromiseLike(result)) {
+      if (this.#pendingTasks.has(result)) {
+        throw new Error('Task already running');
+      }
+      this.#pendingTasks.add(result);
+
+      try {
+        return await result;
+      } finally {
+        this.#pendingTasks.delete(result);
+      }
+    } else {
+      return result;
+    }
+  }
+
+  get closed(): boolean {
+    return this.#controller.signal.aborted;
+  }
+
+  throwIfClosed(): void {
+    this.#controller.signal.throwIfAborted();
+  }
+
+  close(reason?: unknown): Promise<void> {
+    if (!this.#controller.signal.aborted) {
+      this.#controller.abort(reason);
+      this.#queue = this.#queue.then(
+        (): PromiseLike<void> | void => {
+          return this.#close(reason);
+        },
+        (): PromiseLike<void> | void => {
+          return this.#close(reason);
+        },
+      );
+    }
+
+    return this.#queue;
+  }
+
+  [Symbol.asyncDispose](): Promise<void> {
+    return this.close();
+  }
+}
+
+export function isPromiseLike<GValue>(input: unknown): input is PromiseLike<GValue> {
+  return (
+    input !== null && typeof input === 'object' && typeof (input as any)['then'] === 'function'
+  );
+}
+
+/*-----*/
+
+/*-----*/
+
+/*-----*/
+
+/*-----*/
+
+export async function debugFlowV2() {
+  const readable = ReadableFlow.from(
+    (async function* () {
+      yield* [1, 2, 3];
+      throw 'test';
+    })(),
+  ).flatMap(
+    // async (value: number) => {
+    //   return value * 2;
+    // },
+    (value: number): never => {
+      throw 'oki';
+    },
+    async (error: unknown) => {
+      console.log('error', error);
+      // return 10;
+      throw 'ok';
+    },
+  );
+
+  console.log(await readable.last());
+
+  // await using reader = await readable
+  //   .open();
+  //
+
+  // while (true) {
+  //   console.log(await reader.read());
+  // }
+}

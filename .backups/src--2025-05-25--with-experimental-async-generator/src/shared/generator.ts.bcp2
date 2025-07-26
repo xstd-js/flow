@@ -1,0 +1,91 @@
+import { Enum } from './enum/enum.js';
+
+export interface YieldResultNext<GNext> extends Enum<'next'> {
+  readonly value: GNext;
+}
+
+export interface YieldResultThrow<GError = unknown> extends Enum<'throw'> {
+  readonly error: GError;
+}
+
+export interface YieldResultReturn<GReturn> extends Enum<'return'> {
+  readonly value: GReturn;
+}
+
+export type YieldResult<GNext, GReturn, GError = unknown> =
+  | YieldResultNext<GNext>
+  | YieldResultThrow<GError>
+  | YieldResultReturn<GReturn>;
+
+export interface WritableGeneratorInFunction<
+  GArguments extends readonly any[],
+  GIn,
+  GOut,
+  GReturn,
+> {
+  (...args: GArguments): WritableGeneratorInFunctionReturn<GIn, GOut, GReturn>;
+}
+
+export type WritableGeneratorInFunctionReturn<GIn, GOut, GReturn> = Pick<
+  Iterator<GOut, GReturn, YieldResult<GIn, GReturn>>,
+  'next'
+>;
+
+export interface WritableGeneratorOutFunction<
+  GArguments extends readonly any[],
+  GIn,
+  GOut,
+  GReturn,
+> {
+  (...args: GArguments): WritableGeneratorOutFunctionReturn<GIn, GOut, GReturn>;
+}
+
+export type WritableGeneratorOutFunctionReturn<GIn, GOut, GReturn> = Required<
+  IterableIterator<GOut, GReturn, GIn>
+>;
+
+export function writableGenerator<GArguments extends readonly any[], GIn, GOut, GReturn>(
+  fnc: WritableGeneratorInFunction<GArguments, GIn, GOut, GReturn>,
+): WritableGeneratorOutFunction<GArguments, GIn, GOut, GReturn> {
+  return function (...args: GArguments): Required<IterableIterator<GOut, GReturn, GIn>> {
+    const iterator: Iterator<GOut, GReturn, YieldResult<GIn, GReturn>> = fnc(...args);
+
+    let yieldResult: YieldResult<GIn, GReturn>;
+
+    return {
+      next(value: GIn): IteratorResult<GOut, GReturn> {
+        const previousYieldResult: YieldResult<GIn, GReturn> = yieldResult;
+
+        yieldResult = {
+          type: 'next',
+          value,
+        };
+
+        return iterator.next(previousYieldResult);
+      },
+      throw(error: unknown): IteratorResult<GOut, GReturn> {
+        const previousYieldResult: YieldResult<GIn, GReturn> = yieldResult;
+
+        yieldResult = {
+          type: 'throw',
+          error,
+        };
+
+        return iterator.next(previousYieldResult);
+      },
+      return(value: GReturn): IteratorResult<GOut, GReturn> {
+        const previousYieldResult: YieldResult<GIn, GReturn> = yieldResult;
+
+        yieldResult = {
+          type: 'return',
+          value,
+        };
+
+        return iterator.next(previousYieldResult);
+      },
+      [Symbol.iterator](): IterableIterator<GOut, GReturn, GIn> {
+        return this;
+      },
+    };
+  };
+}

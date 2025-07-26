@@ -1,0 +1,240 @@
+import { describe, test } from 'vitest';
+import { AsyncQueue } from './shared/classes/async-queue.js';
+import type { Enum } from './shared/enum/enum.js';
+
+/*--------*/
+
+/* AGENT */
+
+// export interface NextStep<GIn, GOut> {
+//   (input: Result<GIn>, signal: AbortSignal): NextStep<GOut, GIn>;
+// }
+
+export interface FlowResultNext<GValue> extends Enum<'Next'> {
+  readonly value: GValue;
+}
+
+export function flowResultNext<GValue>(value: GValue): FlowResultNext<GValue> {
+  return {
+    type: 'Next',
+    value,
+  };
+}
+
+export const FLOW_RESULT_NEXT_VOID: FlowResultNext<void | undefined> = Object.freeze(
+  flowResultNext(undefined),
+);
+
+export interface FlowResultError<GError = unknown> extends Enum<'Error'> {
+  readonly error: GError;
+}
+
+export function flowResultError<GError>(error: GError): FlowResultError<GError> {
+  return {
+    type: 'Error',
+    error,
+  };
+}
+
+export interface FlowResultComplete extends Enum<'Complete'> {}
+
+export const FLOW_RESULT_COMPLETE = Object.freeze({
+  type: 'Complete',
+});
+
+export function flowResultComplete(): FlowResultComplete {
+  return FLOW_RESULT_COMPLETE;
+}
+
+export type FlowResult<GValue, GError = unknown> =
+  | FlowResultNext<GValue>
+  | FlowResultError<GError>
+  | FlowResultComplete;
+
+export type InferFlowResultValue<GFlowResult extends FlowResult<any, any>> =
+  GFlowResult extends FlowResultNext<infer GValue> ? GValue : never;
+
+export type InferFlowResultError<GFlowResult extends FlowResult<any, any>> =
+  GFlowResult extends FlowResultError<infer GError> ? GError : never;
+
+export function switchFlowResult<GFlowResult extends FlowResult<any, any>, GReturn>(
+  input: GFlowResult,
+  next: (value: InferFlowResultValue<GFlowResult>) => GReturn,
+  error: (error: InferFlowResultError<GFlowResult>) => GReturn,
+  complete: () => GReturn,
+): GReturn {
+  if (input.type === 'Next') {
+    return next(input.value);
+  } else if (input.type === 'Error') {
+    return error(input.error);
+  } else {
+    return complete();
+  }
+}
+
+/*--------*/
+
+export interface FlowFnc<GIn, GOut> {
+  (input: FlowResult<GIn>, output: FlowFnc<GOut, GIn>, signal?: AbortSignal): void;
+}
+
+export type GateFnc<GIn, GOut> = FlowFnc<void, FlowFnc<GIn, GOut>>;
+
+/*--------*/
+
+function once<GFunction extends (...args: any[]) => any>(callback: GFunction): GFunction {
+  let called: boolean = false;
+  return function (this: any, ...args: any[]): any {
+    if (called) {
+      throw new Error('Cannot be called twice.');
+    }
+    called = true;
+    return Reflect.apply(callback, this, args);
+  } as GFunction;
+}
+
+/*--------*/
+
+function errored<GIn, GOut>(error: unknown): FlowFnc<GIn, GOut> {
+  return (_input: FlowResult<GIn>, output: FlowFnc<GOut, GIn>, signal?: AbortSignal): void => {
+    if (signal === undefined || !signal.aborted) {
+      output(flowResultError(error), errored<GIn, GOut>(error));
+    }
+  };
+}
+
+function complete<GIn, GOut>(): FlowFnc<GIn, GOut> {
+  return (_input: FlowResult<GIn>, output: FlowFnc<GOut, GIn>, signal?: AbortSignal): void => {
+    if (signal === undefined || !signal.aborted) {
+      output(FLOW_RESULT_COMPLETE, complete<GIn, GOut>());
+    }
+  };
+}
+
+function fromIterator<GIn, GOut>(iterator: Iterator<GOut, void, GIn>): FlowFnc<GIn, GOut> {
+  return once((input: FlowResult<GIn>, output: FlowFnc<GOut, GIn>, signal?: AbortSignal): void => {
+    if (signal === undefined || !signal.aborted) {
+      let result: IteratorResult<GOut, void>;
+
+      try {
+        if (input.type === 'Next') {
+          result = iterator.next(input.value);
+        } else if (input.type === 'Error') {
+          if (iterator.throw === undefined) {
+            throw new Error('Iterator does not support throw');
+          }
+          result = iterator.throw(input.error);
+        } else {
+          result = iterator.return?.() ?? {
+            done: true,
+            value: undefined,
+          };
+        }
+      } catch (error: unknown) {
+        return output(flowResultError(error), errored<GIn, GOut>(error));
+      }
+
+      if (result.done) {
+        output(FLOW_RESULT_COMPLETE, complete<GIn, GOut>());
+      } else {
+        output(flowResultNext(result.value), fromIterator<GIn, GOut>(iterator));
+      }
+    }
+  });
+}
+
+function fromIterable<GIn, GOut>(iterable: Iterable<GOut, void, GIn>): FlowFnc<GIn, GOut> {
+  return fromIterator(iterable[Symbol.iterator]());
+}
+
+function fromGeneratorFunction<GIn, GOut>(
+  generatorFunction: () => Iterable<GOut, void, GIn>,
+): FlowFnc<GIn, GOut> {
+  return fromIterable<GIn, GOut>(generatorFunction());
+}
+
+/*--------*/
+
+// => this is almost an AsyncIterator
+
+export interface FlowPromiseFnc<GIn, GOut> {
+  (input: FlowResult<GIn>, signal?: AbortSignal): Promise<IteratorResult<GOut>>;
+}
+
+function toPromiseFnc<GIn, GOut>(flow: FlowFnc<GIn, GOut>): FlowPromiseFnc<GIn, GOut> {
+  const queue: AsyncQueue = new AsyncQueue();
+  let queueSignal: AbortSignal | undefined;
+
+  return (input: FlowResult<GIn>, signal?: AbortSignal): Promise<IteratorResult<GOut>> => {
+    return queue.enqueue((): Promise<IteratorResult<GOut>> => {
+      return new Promise<IteratorResult<GOut>>(
+        (resolve: (value: IteratorResult<GOut>) => void, reject: (reason?: any) => void): void => {
+          if (queueSignal !== undefined && queueSignal.aborted) {
+            reject(queueSignal.reason);
+          } else if (signal === undefined || !signal.aborted) {
+            flow(
+              input,
+              (input: FlowResult<GOut>, output: FlowFnc<GIn, GOut>, signal?: AbortSignal): void => {
+                flow = output;
+                queueSignal = signal;
+
+                if (input.type === 'Next') {
+                  resolve({
+                    done: false,
+                    value: input.value,
+                  });
+                } else if (input.type === 'Error') {
+                  reject(input.error);
+                } else {
+                  resolve({
+                    done: true,
+                    value: undefined,
+                  });
+                }
+              },
+              signal,
+            );
+          }
+        },
+      );
+    });
+  };
+}
+
+function first<GIn, GOut>(
+  flow: FlowFnc<GIn, GOut>,
+  input: FlowResult<GIn>,
+  signal?: AbortSignal,
+): Promise<GOut> {
+  // TODO
+}
+
+/*--------*/
+
+// export class Flow<GIn, GOut> {
+//   next(value: FlowResult<GIn>, signal: AbortSignal): Promise<IteratorResult<GOut>> {}
+// }
+
+/*-------------*/
+
+export async function debugFlow() {
+  const flow = fromGeneratorFunction<void, number>(function* () {
+    yield* [0, 1, 2];
+  });
+
+  const promiseFlow = toPromiseFnc(flow);
+
+  // await using state: AsyncReader<'on' | 'off'> = null as any;
+
+  let result: IteratorResult<number, void>;
+
+  while (!(result = await promiseFlow(FLOW_RESULT_NEXT_VOID)).done) {
+    console.log('state', result.value);
+  }
+}
+
+describe('abc', () => {
+  test('deg', async () => {
+    await debugFlow();
+  });
+});
