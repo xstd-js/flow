@@ -4,19 +4,18 @@ import { AsyncEnumeratorObject, EnumeratorResult } from '../../enumerable/enumer
 
 /*---*/
 
-export type NoOptions = void | {};
+// export type NoOptions = void | {};
 
 /*---*/
 
-export interface FlowFactory<GIn, GOut, GReturn, GOptions> {
-  (ctx: FlowFactoryContext<GIn, GReturn, GOptions>): AsyncGenerator<GOut, GReturn, void>;
+export interface FlowFactory<GIn, GOut, GReturn, GArguments extends readonly unknown[] = []> {
+  (ctx: FlowFactoryContext<GIn, GReturn>, ...args: GArguments): AsyncGenerator<GOut, GReturn, void>;
 }
 
-export interface FlowFactoryContext<GIn, GReturn, GOptions> {
+export interface FlowFactoryContext<GIn, GReturn> {
   readonly $next: FlowFactoryContextNext<GIn>;
   readonly $return: FlowFactoryContextReturn<GReturn>;
   readonly signal: AbortSignal;
-  readonly options: GOptions;
 }
 
 export interface FlowFactoryContextNext<GIn> {
@@ -27,31 +26,27 @@ export interface FlowFactoryContextReturn<GReturn> {
   (): GReturn;
 }
 
-export type OpenFlowOptions<GOptions> = Omit<
-  FlowFactoryContext<any, any, GOptions>,
-  '$next' | '$return'
->;
-
 /*---*/
 
-export class Flow<GIn, GOut, GReturn, GOptions> {
+export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[] = []> {
   static debugMode: boolean = true;
 
-  static concat<GIn, GOut, GOptions>(
-    ...flows: Flow<GIn, GOut, void, GOptions>[]
-  ): Flow<GIn, GOut, void, GOptions> {
-    return new Flow<GIn, GOut, void, GOptions>(async function* (
-      ctx: FlowFactoryContext<GIn, void, GOptions>,
+  static concat<GIn, GOut, GArguments extends readonly unknown[] = []>(
+    ...flows: Flow<GIn, GOut, void, GArguments>[]
+  ): Flow<GIn, GOut, void, GArguments> {
+    return new Flow<GIn, GOut, void, GArguments>(async function* (
+      ctx: FlowFactoryContext<GIn, void>,
+      ...args: GArguments
     ): AsyncGenerator<GOut, void, void> {
       for (let i: number = 0; i < flows.length; i++) {
-        yield* flows[i].adopt(ctx);
+        yield* flows[i].use(ctx, ...args);
       }
     });
   }
 
-  readonly #factory: FlowFactory<GIn, GOut, GReturn, GOptions>;
+  readonly #factory: FlowFactory<GIn, GOut, GReturn, GArguments>;
 
-  constructor(factory: FlowFactory<GIn, GOut, GReturn, GOptions>) {
+  constructor(factory: FlowFactory<GIn, GOut, GReturn, GArguments>) {
     if (!isAsyncGeneratorFunction(factory)) {
       throw new TypeError('The factory must be an AsyncGenerator function.');
     }
@@ -59,29 +54,31 @@ export class Flow<GIn, GOut, GReturn, GOptions> {
     this.#factory = factory;
   }
 
-  open(signal: AbortSignal, options: GOptions): AsyncEnumeratorObject<GIn, GOut, GReturn> {
+  open(signal: AbortSignal, ...args: GArguments): AsyncEnumeratorObject<GIn, GOut, GReturn> {
     let nextValue: GIn;
     let hasNextValue: boolean = false;
 
     let returnValue: GReturn;
     let hasReturnValue: boolean = false;
 
-    const iterator: AsyncGenerator<GOut, GReturn, void> = this.#factory({
-      $next: (): GIn => {
-        if (hasNextValue) {
-          return nextValue;
-        }
-        throw new Error('Empty $next().');
+    const iterator: AsyncGenerator<GOut, GReturn, void> = this.#factory(
+      {
+        $next: (): GIn => {
+          if (hasNextValue) {
+            return nextValue;
+          }
+          throw new Error('Empty $next().');
+        },
+        $return: (): GReturn => {
+          if (hasReturnValue) {
+            return returnValue;
+          }
+          throw new Error('Empty $return().');
+        },
+        signal,
       },
-      $return: (): GReturn => {
-        if (hasReturnValue) {
-          return returnValue;
-        }
-        throw new Error('Empty $return().');
-      },
-      signal,
-      options,
-    });
+      ...args,
+    );
 
     let queue: Promise<any> = Promise.resolve();
 
@@ -196,18 +193,20 @@ export class Flow<GIn, GOut, GReturn, GOptions> {
       [Symbol.asyncIterator]: (): AsyncEnumeratorObject<GIn, GOut, GReturn> => {
         return enumerator;
       },
-      [Symbol.asyncDispose]: (): Promise<void> => {
-        return iterator[Symbol.asyncDispose]() as Promise<void>;
+      [Symbol.asyncDispose]: async (): Promise<void> => {
+        // return iterator[Symbol.asyncDispose]() as Promise<void>;
+        await enumerator.return(undefined as GReturn);
       },
     };
 
     return enumerator;
   }
 
-  // nest, transfer, adopt
-  adopt(
-    ctx: FlowFactoryContext<GIn, GReturn, GOptions>,
+  // nest, transfer, adopt, use, expand
+  use(
+    ctx: FlowFactoryContext<GIn, GReturn>,
+    ...args: GArguments
   ): AsyncEnumeratorObject<void, GOut, GReturn> {
-    return this.#factory(ctx) as AsyncEnumeratorObject<void, GOut, GReturn>;
+    return this.#factory(ctx, ...args) as AsyncEnumeratorObject<void, GOut, GReturn>;
   }
 }

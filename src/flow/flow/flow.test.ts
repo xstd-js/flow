@@ -49,7 +49,7 @@ async function debugFlow02() {
 
   const flowB = new Flow(async function* (ctx) {
     try {
-      yield* flowA.adopt(ctx);
+      yield* flowA.use(ctx);
     } finally {
       console.log('flowB done');
     }
@@ -78,7 +78,7 @@ async function debugFlow03() {
     ctx: FlowFactoryContext<number, void>,
   ): AsyncGenerator<void, void, void> {
     try {
-      yield* flowA.adopt(ctx);
+      yield* flowA.use(ctx);
     } finally {
       console.log('flowB done');
     }
@@ -97,6 +97,8 @@ async function debugFlow03() {
   } catch (error: unknown) {
     console.log(error);
   }
+
+  await it.return();
 
   await sleep(600);
 }

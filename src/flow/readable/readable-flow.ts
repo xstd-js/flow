@@ -1,4 +1,4 @@
-import { sleep } from '@xstd/async-task';
+import { abortify, sleep } from '@xstd/abortable';
 import { listen } from '@xstd/disposable';
 import {
   FilterFunction,
@@ -7,30 +7,33 @@ import {
   MapFunction,
   ReduceFunction,
 } from '@xstd/functional';
-import { OptionalPushToPullOptions, PushToPullOptions } from '../../shared/push-to-pull-options.js';
+import { PushToPullOptions } from '../../shared/push-to-pull-options.js';
 import { flowSyncBridge } from '../bridge/flow-sync-bridge.js';
-import { Flow, NoOptions } from '../flow/flow.js';
+import { Flow } from '../flow/flow.js';
 import { FlowReader } from './types/flow-reader.js';
 import { FlowFlatMapFunction } from './types/methods/flat-map/flow-flat-map-function.js';
+import { FlowForkedValue } from './types/methods/fork/flow-forked-value.js';
 import { FlowInspectOptions } from './types/methods/inspect/flow-inspect-options.js';
 import { ReadableFlowContext } from './types/readable-flow-context.js';
 import { ReadableFlowIterator } from './types/readable-flow-iterator.js';
 
-export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOptions> {
+export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> extends Flow<
+  void,
+  GValue,
+  void,
+  GArguments
+> {
   static when<GEvent extends Event>(
     target: EventTarget,
     type: string,
-  ): ReadableFlow<GEvent, OptionalPushToPullOptions> {
-    return new ReadableFlow<GEvent, OptionalPushToPullOptions>(async function* ({
-      signal,
-      options,
-    }: ReadableFlowContext<OptionalPushToPullOptions>): ReadableFlowIterator<GEvent> {
+  ): ReadableFlow<GEvent, [options?: PushToPullOptions]> {
+    return new ReadableFlow<GEvent, [options?: PushToPullOptions]>(async function* (
+      { signal }: ReadableFlowContext,
+      options?: PushToPullOptions,
+    ): ReadableFlowIterator<GEvent> {
       signal.throwIfAborted();
 
-      const [bridge, reader] = flowSyncBridge<GEvent>(
-        signal,
-        options as PushToPullOptions | undefined,
-      );
+      const [bridge, reader] = flowSyncBridge<GEvent>(signal, options);
 
       using _eventListener: Disposable = listen(target, type, (event: Event): void => {
         void bridge.write(event as GEvent);
@@ -53,9 +56,9 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
   //   });
   // }
 
-  static of<GValue>(...values: GValue[]): ReadableFlow<GValue, NoOptions> {
-    return new ReadableFlow<GValue, NoOptions>(async function* (
-      ctx: ReadableFlowContext<NoOptions>,
+  static of<GValue>(...values: GValue[]): ReadableFlow<GValue, []> {
+    return new ReadableFlow<GValue, []>(async function* (
+      ctx: ReadableFlowContext,
     ): ReadableFlowIterator<GValue> {
       for (let i: number = 0; i < values.length; i++) {
         ctx.signal.throwIfAborted();
@@ -64,9 +67,7 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
     });
   }
 
-  static from<GValue>(
-    input: Iterable<GValue> | AsyncIterable<GValue>,
-  ): ReadableFlow<GValue, NoOptions> {
+  static from<GValue>(input: Iterable<GValue> | AsyncIterable<GValue>): ReadableFlow<GValue, []> {
     if (Symbol.iterator in input) {
       return this.#fromIterable<GValue>(input);
     }
@@ -78,9 +79,9 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
     throw new TypeError('Invalid input.');
   }
 
-  static #fromIterable<GValue>(input: Iterable<GValue>): ReadableFlow<GValue, NoOptions> {
-    return new ReadableFlow<GValue, NoOptions>(async function* (
-      ctx: ReadableFlowContext<NoOptions>,
+  static #fromIterable<GValue>(input: Iterable<GValue>): ReadableFlow<GValue, []> {
+    return new ReadableFlow<GValue, []>(async function* (
+      ctx: ReadableFlowContext,
     ): ReadableFlowIterator<GValue> {
       const iterator: Iterator<GValue> = input[Symbol.iterator]();
 
@@ -110,9 +111,9 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
     });
   }
 
-  static #fromAsyncIterable<GValue>(input: AsyncIterable<GValue>): ReadableFlow<GValue, NoOptions> {
-    return new ReadableFlow<GValue, NoOptions>(async function* (
-      ctx: ReadableFlowContext<NoOptions>,
+  static #fromAsyncIterable<GValue>(input: AsyncIterable<GValue>): ReadableFlow<GValue, []> {
+    return new ReadableFlow<GValue, []>(async function* (
+      ctx: ReadableFlowContext,
     ): ReadableFlowIterator<GValue> {
       const iterator: AsyncIterator<GValue> = input[Symbol.asyncIterator]();
 
@@ -142,17 +143,14 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
     });
   }
 
-  /* OPTIONS */
+  /* ARGUMENTS */
 
-  setOptions(options: GOptions): ReadableFlow<GValue, NoOptions> {
-    const self: ReadableFlow<GValue, GOptions> = this;
-    return new ReadableFlow<GValue, NoOptions>(async function* (
-      ctx: ReadableFlowContext<NoOptions>,
+  setupArguments(...args: GArguments): ReadableFlow<GValue, []> {
+    const self: ReadableFlow<GValue, GArguments> = this;
+    return new ReadableFlow<GValue, []>(async function* (
+      ctx: ReadableFlowContext,
     ): ReadableFlowIterator<GValue> {
-      yield* self.adopt({
-        ...ctx,
-        options,
-      });
+      yield* self.use(ctx, ...args);
     });
   }
 
@@ -164,12 +162,13 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
 
   /* TRANSFORM THE DATA */
 
-  map<GNewValue>(mapFnc: MapFunction<GValue, GNewValue>): ReadableFlow<GNewValue, GOptions> {
-    const self: ReadableFlow<GValue, GOptions> = this;
-    return new ReadableFlow<GNewValue, GOptions>(async function* (
-      ctx: ReadableFlowContext<GOptions>,
+  map<GNewValue>(mapFnc: MapFunction<GValue, GNewValue>): ReadableFlow<GNewValue, GArguments> {
+    const self: ReadableFlow<GValue, GArguments> = this;
+    return new ReadableFlow<GNewValue, GArguments>(async function* (
+      ctx: ReadableFlowContext,
+      ...args: GArguments
     ): ReadableFlowIterator<GNewValue> {
-      for await (const value of self.adopt(ctx)) {
+      for await (const value of self.use(ctx, ...args)) {
         yield mapFnc(value);
       }
     });
@@ -177,14 +176,15 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
 
   filter<GNewValue extends GValue>(
     filterFnc: FilterFunctionWithSubType<GValue, GNewValue>,
-  ): ReadableFlow<GNewValue, GOptions>;
-  filter(filterFnc: FilterFunction<GValue>): ReadableFlow<GValue, GOptions>;
-  filter(filterFnc: FilterFunction<GValue>): ReadableFlow<GValue, GOptions> {
-    const self: ReadableFlow<GValue, GOptions> = this;
-    return new ReadableFlow<GValue, GOptions>(async function* (
-      ctx: ReadableFlowContext<GOptions>,
+  ): ReadableFlow<GNewValue, GArguments>;
+  filter(filterFnc: FilterFunction<GValue>): ReadableFlow<GValue, GArguments>;
+  filter(filterFnc: FilterFunction<GValue>): ReadableFlow<GValue, GArguments> {
+    const self: ReadableFlow<GValue, GArguments> = this;
+    return new ReadableFlow<GValue, GArguments>(async function* (
+      ctx: ReadableFlowContext,
+      ...args: GArguments
     ): ReadableFlowIterator<GValue> {
-      for await (const value of self.adopt(ctx)) {
+      for await (const value of self.use(ctx, ...args)) {
         if (filterFnc(value)) {
           yield value;
         }
@@ -194,12 +194,13 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
 
   mapFilter<GNewValue>(
     filterFnc: MapFilterFunction<GValue, GNewValue>,
-  ): ReadableFlow<GNewValue, GOptions> {
-    const self: ReadableFlow<GValue, GOptions> = this;
-    return new ReadableFlow<GNewValue, GOptions>(async function* (
-      ctx: ReadableFlowContext<GOptions>,
+  ): ReadableFlow<GNewValue, GArguments> {
+    const self: ReadableFlow<GValue, GArguments> = this;
+    return new ReadableFlow<GNewValue, GArguments>(async function* (
+      ctx: ReadableFlowContext,
+      ...args: GArguments
     ): ReadableFlowIterator<GNewValue> {
-      for await (const value of self.adopt(ctx)) {
+      for await (const value of self.use(ctx, ...args)) {
         const newValue: GNewValue | null = filterFnc(value);
         if (newValue !== null) {
           yield newValue;
@@ -210,11 +211,12 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
 
   /* TRUNCATE THE FLOW */
 
-  take(count: number): ReadableFlow<GValue, GOptions> {
-    const self: ReadableFlow<GValue, GOptions> = this;
+  take(count: number): ReadableFlow<GValue, GArguments> {
+    const self: ReadableFlow<GValue, GArguments> = this;
 
-    return new ReadableFlow<GValue, GOptions>(async function* (
-      ctx: ReadableFlowContext<GOptions>,
+    return new ReadableFlow<GValue, GArguments>(async function* (
+      ctx: ReadableFlowContext,
+      ...args: GArguments
     ): ReadableFlowIterator<GValue> {
       ctx.signal.throwIfAborted();
 
@@ -222,7 +224,7 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
         return;
       }
 
-      for await (const value of self.adopt(ctx)) {
+      for await (const value of self.use(ctx, ...args)) {
         yield value;
 
         count--;
@@ -234,13 +236,13 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
     });
   }
 
-  takeUntil(untilSource: ReadableFlow<any, NoOptions>): ReadableFlow<GValue, GOptions> {
-    const self: ReadableFlow<GValue, GOptions> = this;
+  takeUntil(untilSource: ReadableFlow<any, []>): ReadableFlow<GValue, GArguments> {
+    const self: ReadableFlow<GValue, GArguments> = this;
 
-    return new ReadableFlow<GValue, GOptions>(async function* ({
-      signal,
-      options,
-    }: ReadableFlowContext<GOptions>): ReadableFlowIterator<GValue> {
+    return new ReadableFlow<GValue, GArguments>(async function* (
+      { signal }: ReadableFlowContext,
+      ...args: GArguments
+    ): ReadableFlowIterator<GValue> {
       signal.throwIfAborted();
 
       const controller: AbortController = new AbortController();
@@ -257,7 +259,7 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
           };
         });
 
-      await using reader: FlowReader<GValue> = self.open(sharedSignal, options);
+      await using reader: FlowReader<GValue> = self.open(sharedSignal, ...args);
 
       let result: IteratorResult<GValue>;
       while (!(result = await Promise.race([reader.next(), untilPromise])).done) {
@@ -268,13 +270,14 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
     });
   }
 
-  drop(count: number): ReadableFlow<GValue, GOptions> {
-    const self: ReadableFlow<GValue, GOptions> = this;
+  drop(count: number): ReadableFlow<GValue, GArguments> {
+    const self: ReadableFlow<GValue, GArguments> = this;
 
-    return new ReadableFlow<GValue, GOptions>(async function* (
-      ctx: ReadableFlowContext<GOptions>,
+    return new ReadableFlow<GValue, GArguments>(async function* (
+      ctx: ReadableFlowContext,
+      ...args: GArguments
     ): ReadableFlowIterator<GValue> {
-      for await (const value of self.adopt(ctx)) {
+      for await (const value of self.use(ctx, ...args)) {
         if (count > 0) {
           count--;
         } else {
@@ -288,17 +291,15 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
 
   flatMap<GNewValue>(
     flatMapFnc: FlowFlatMapFunction<GValue, GNewValue>,
-  ): ReadableFlow<GNewValue, GOptions> {
-    const self: ReadableFlow<GValue, GOptions> = this;
+  ): ReadableFlow<GNewValue, GArguments> {
+    const self: ReadableFlow<GValue, GArguments> = this;
 
-    return new ReadableFlow<GNewValue, GOptions>(async function* (
-      ctx: ReadableFlowContext<GOptions>,
+    return new ReadableFlow<GNewValue, GArguments>(async function* (
+      ctx: ReadableFlowContext,
+      ...args: GArguments
     ): ReadableFlowIterator<GNewValue> {
-      for await (const value of self.adopt(ctx)) {
-        yield* flatMapFnc(value).adopt({
-          ...ctx,
-          options: undefined,
-        });
+      for await (const value of self.use(ctx, ...args)) {
+        yield* flatMapFnc(value).use(ctx);
       }
     });
   }
@@ -306,125 +307,129 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
   /**
    * @experimental
    */
-  loop(delay: number): ReadableFlow<GValue, GOptions> {
-    const self: ReadableFlow<GValue, GOptions> = this;
+  loop(delay: number): ReadableFlow<GValue, GArguments> {
+    const self: ReadableFlow<GValue, GArguments> = this;
 
-    return new ReadableFlow<GValue, GOptions>(async function* (
-      ctx: ReadableFlowContext<GOptions>,
+    return new ReadableFlow<GValue, GArguments>(async function* (
+      ctx: ReadableFlowContext,
+      ...args: GArguments
     ): ReadableFlowIterator<GValue> {
       while (true) {
         try {
-          yield* self.adopt(ctx);
-        } catch (error: unknown) {
-          await sleep(delay, ctx.signal);
+          yield* self.use(ctx, ...args);
+        } finally {
+          await sleep(delay, { signal: ctx.signal });
         }
       }
     });
   }
 
-  // #fork: ReadableFlow<FlowForkedValue<GValue>> | undefined;
-  //
-  // /**
-  //  * @experimental
-  //  */
-  // fork(): ReadableFlow<FlowForkedValue<GValue>> {
-  //   if (this.#fork === undefined) {
-  //     const self: ReadableFlow<GValue> = this;
-  //
-  //     let sharedController: AbortController | undefined;
-  //     let consumers: number = 0;
-  //     let reader: FlowReader<GValue> | undefined;
-  //
-  //     type PartialFlowForkedValue = Pick<FlowForkedValue<GValue>, 'value' | 'time'>;
-  //
-  //     const cachedQueries: Promise<IteratorResult<PartialFlowForkedValue, void>>[] = [];
-  //
-  //     this.#fork = new ReadableFlow<FlowForkedValue<GValue>>(async function* (
-  //       ctx: ReadableFlowContext,
-  //     ): ReadableFlowIterator<FlowForkedValue<GValue>> {
-  //       ctx.signal.throwIfAborted();
-  //
-  //       consumers++;
-  //
-  //       try {
-  //         if (consumers === 1) {
-  //           sharedController = new AbortController();
-  //           reader = self.open(sharedController.signal);
-  //         }
-  //
-  //         let index: number = 0;
-  //
-  //         while (true) {
-  //           if (index === cachedQueries.length) {
-  //             // └> we are ahead
-  //
-  //             cachedQueries.push(
-  //               reader!
-  //                 .next()
-  //                 .then(
-  //                   (
-  //                     result: IteratorResult<GValue, void>,
-  //                   ): IteratorResult<PartialFlowForkedValue, void> => {
-  //                     if (result.done) {
-  //                       return result;
-  //                     } else {
-  //                       return {
-  //                         done: false,
-  //                         value: {
-  //                           value: result.value,
-  //                           time: Date.now(),
-  //                         } satisfies PartialFlowForkedValue,
-  //                       };
-  //                     }
-  //                   },
-  //                 ),
-  //             );
-  //           }
-  //
-  //           const cachedQuery: Promise<IteratorResult<PartialFlowForkedValue, void>> =
-  //             cachedQueries[index++];
-  //
-  //           const result: IteratorResult<PartialFlowForkedValue, void> =
-  //             await rejectPromiseWhenSignalIsAborted(cachedQuery, ctx.signal);
-  //
-  //           if (result.done) {
-  //             return;
-  //           } else {
-  //             yield {
-  //               ...result.value,
-  //               isEdge: index === cachedQueries.length,
-  //             };
-  //           }
-  //         }
-  //       } finally {
-  //         consumers--;
-  //
-  //         if (consumers === 0) {
-  //           sharedController!.abort(ctx.signal.reason);
-  //           sharedController = undefined;
-  //           reader = undefined;
-  //           cachedQueries.length = 0;
-  //         }
-  //       }
-  //     });
-  //   }
-  //
-  //   return this.#fork;
-  // }
-  //
-  // /**
-  //  * @experimental
-  //  */
-  // edge(): ReadableFlow<GValue, GOptions> {
-  //   return this.fork().mapFilter((forked: FlowForkedValue<GValue>): GValue | null => {
-  //     return forked.isEdge ? forked.value : null;
-  //   });
-  // }
+  #fork: ReadableFlow<FlowForkedValue<GValue>, GArguments> | undefined;
+
+  /**
+   * @experimental
+   */
+  fork(): ReadableFlow<FlowForkedValue<GValue>, GArguments> {
+    if (this.#fork === undefined) {
+      const self: ReadableFlow<GValue, GArguments> = this;
+
+      let sharedController: AbortController | undefined;
+      let consumers: number = 0;
+      let reader: FlowReader<GValue> | undefined;
+
+      type PartialFlowForkedValue = Pick<FlowForkedValue<GValue>, 'value' | 'time'>;
+
+      const cachedQueries: Promise<IteratorResult<PartialFlowForkedValue, void>>[] = [];
+
+      this.#fork = new ReadableFlow<FlowForkedValue<GValue>, GArguments>(async function* (
+        ctx: ReadableFlowContext,
+        ...args: GArguments
+      ): ReadableFlowIterator<FlowForkedValue<GValue>> {
+        ctx.signal.throwIfAborted();
+
+        consumers++;
+
+        try {
+          if (consumers === 1) {
+            sharedController = new AbortController();
+            reader = self.open(sharedController.signal, ...args);
+          }
+
+          let index: number = 0;
+
+          while (true) {
+            if (index === cachedQueries.length) {
+              // └> we are ahead
+
+              cachedQueries.push(
+                reader!
+                  .next()
+                  .then(
+                    (
+                      result: IteratorResult<GValue, void>,
+                    ): IteratorResult<PartialFlowForkedValue, void> => {
+                      if (result.done) {
+                        return result;
+                      } else {
+                        return {
+                          done: false,
+                          value: {
+                            value: result.value,
+                            time: Date.now(),
+                          } satisfies PartialFlowForkedValue,
+                        };
+                      }
+                    },
+                  ),
+              );
+            }
+
+            const cachedQuery: Promise<IteratorResult<PartialFlowForkedValue, void>> =
+              cachedQueries[index++];
+
+            const result: IteratorResult<PartialFlowForkedValue, void> = await abortify(
+              cachedQuery,
+              { signal: ctx.signal },
+            );
+
+            if (result.done) {
+              return;
+            } else {
+              yield {
+                ...result.value,
+                isEdge: index === cachedQueries.length,
+              };
+            }
+          }
+        } finally {
+          consumers--;
+
+          if (consumers === 0) {
+            sharedController!.abort(ctx.signal.reason);
+            sharedController = undefined;
+            reader = undefined;
+            cachedQueries.length = 0;
+          }
+        }
+      });
+    }
+
+    return this.#fork;
+  }
+
+  /**
+   * @experimental
+   */
+  edge(): ReadableFlow<GValue, GArguments> {
+    return this.fork().mapFilter((forked: FlowForkedValue<GValue>): GValue | null => {
+      return forked.isEdge ? forked.value : null;
+    });
+  }
 
   /* INSPECT THE FLOW */
 
-  inspect(options: FlowInspectOptions<GValue> = {}): ReadableFlow<GValue, GOptions> {
-    const self: ReadableFlow<GValue, GOptions> = this;
+  inspect(options: FlowInspectOptions<GValue> = {}): ReadableFlow<GValue, GArguments> {
+    const self: ReadableFlow<GValue, GArguments> = this;
 
     const run = <GKey extends keyof FlowInspectOptions<GValue>>(
       key: GKey,
@@ -440,13 +445,14 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
       }
     };
 
-    return new ReadableFlow<GValue, GOptions>(async function* (
-      ctx: ReadableFlowContext<GOptions>,
+    return new ReadableFlow<GValue, GArguments>(async function* (
+      ctx: ReadableFlowContext,
+      ...args: GArguments
     ): ReadableFlowIterator<GValue> {
       run('open');
 
       try {
-        for await (const value of self.adopt(ctx)) {
+        for await (const value of self.use(ctx, ...args)) {
           run('next', value);
         }
       } catch (error: unknown) {
@@ -458,14 +464,15 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
     });
   }
 
-  finally(finallyFnc: () => PromiseLike<void> | void): ReadableFlow<GValue, GOptions> {
-    const self: ReadableFlow<GValue, GOptions> = this;
+  finally(finallyFnc: () => PromiseLike<void> | void): ReadableFlow<GValue, GArguments> {
+    const self: ReadableFlow<GValue, GArguments> = this;
 
-    return new ReadableFlow<GValue, GOptions>(async function* (
-      ctx: ReadableFlowContext<GOptions>,
+    return new ReadableFlow<GValue, GArguments>(async function* (
+      ctx: ReadableFlowContext,
+      ...args: GArguments
     ): ReadableFlowIterator<GValue> {
       try {
-        yield* self.adopt(ctx);
+        yield* self.use(ctx, ...args);
       } finally {
         await finallyFnc();
       }
@@ -474,8 +481,8 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
 
   /* PROMISE-BASED RETURN */
 
-  toArray(signal: AbortSignal, options: GOptions): Promise<GValue[]> {
-    return Array.fromAsync<GValue>(this.open(signal, options));
+  toArray(signal: AbortSignal, ...args: GArguments): Promise<GValue[]> {
+    return Array.fromAsync<GValue>(this.open(signal, ...args));
   }
 
   // TODO: forEach, find
@@ -483,9 +490,9 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
   async some(
     predicate: FilterFunction<GValue>,
     signal: AbortSignal,
-    options: GOptions,
+    ...args: GArguments
   ): Promise<boolean> {
-    for await (const value of this.open(signal, options)) {
+    for await (const value of this.open(signal, ...args)) {
       if (predicate(value)) {
         return true;
       }
@@ -496,9 +503,9 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
   async every(
     predicate: FilterFunction<GValue>,
     signal: AbortSignal,
-    options: GOptions,
+    ...args: GArguments
   ): Promise<boolean> {
-    for await (const value of this.open(signal, options)) {
+    for await (const value of this.open(signal, ...args)) {
       if (!predicate(value)) {
         return false;
       }
@@ -509,32 +516,32 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
   reduce(
     reducer: ReduceFunction<GValue, GValue>,
     signal: AbortSignal,
-    options: GOptions,
+    ...args: GArguments
   ): Promise<GValue>;
   reduce<GReducedValue extends GValue>(
     reducer: ReduceFunction<GValue, GReducedValue>,
     initialValue: GReducedValue,
     signal: AbortSignal,
-    options: GOptions,
+    ...args: GArguments
   ): Promise<GReducedValue>;
-  async reduce(reducer: ReduceFunction<any, any>, ...args: any[]): Promise<any> {
+  async reduce(reducer: ReduceFunction<any, any>, ...rest: any[]): Promise<any> {
     let accumulator: any;
     let accumulatorUninitialized: boolean;
     let signal: AbortSignal;
-    let options: GOptions;
+    let args: GArguments;
 
-    if (args[1] instanceof AbortSignal) {
+    if (rest[1] instanceof AbortSignal) {
       accumulatorUninitialized = false;
-      accumulator = args[0];
-      signal = args[1];
-      options = args[2];
+      accumulator = rest[0];
+      signal = rest[1];
+      args = rest.slice(2) as unknown as GArguments;
     } else {
       accumulatorUninitialized = true;
-      signal = args[0];
-      options = args[1];
+      signal = rest[0];
+      args = rest.slice(1) as unknown as GArguments;
     }
 
-    for await (const value of this.open(signal, options)) {
+    for await (const value of this.open(signal, ...args)) {
       if (accumulatorUninitialized) {
         accumulatorUninitialized = false;
         accumulator = value;
@@ -547,8 +554,8 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
     return accumulator;
   }
 
-  async first(signal: AbortSignal, options: GOptions): Promise<GValue> {
-    await using reader: FlowReader<GValue> = this.open(signal, options);
+  async first(signal: AbortSignal, ...args: GArguments): Promise<GValue> {
+    await using reader: FlowReader<GValue> = this.open(signal, ...args);
 
     const result: IteratorResult<GValue, void> = await reader.next();
 
@@ -559,11 +566,11 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
     return result.value;
   }
 
-  async last(signal: AbortSignal, options: GOptions): Promise<GValue> {
+  async last(signal: AbortSignal, ...args: GArguments): Promise<GValue> {
     let lastValue: GValue;
     let hasValue: boolean = false;
 
-    for await (const value of this.open(signal, options)) {
+    for await (const value of this.open(signal, ...args)) {
       lastValue = value;
       hasValue = true;
     }
@@ -577,13 +584,13 @@ export class ReadableFlow<GValue, GOptions> extends Flow<void, GValue, void, GOp
 
   /* CAST TO OTHER KIND OF STREAMS */
 
-  toReadableStream(options: GOptions): ReadableStream<GValue> {
+  toReadableStream(...args: GArguments): ReadableStream<GValue> {
     let reader: FlowReader<GValue>;
     const abortController: AbortController = new AbortController();
 
     return new ReadableStream<GValue>({
       start: (): void => {
-        reader = this.open(abortController.signal, options);
+        reader = this.open(abortController.signal, ...args);
       },
       pull: async (controller: ReadableStreamDefaultController<GValue>): Promise<void> => {
         let result: IteratorResult<GValue, void>;

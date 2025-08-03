@@ -1,6 +1,7 @@
 import { sleep } from '@xstd/async-task';
 import { describe, test } from 'vitest';
 import { ReadableFlow } from './flow/readable/readable-flow.js';
+import { ReadableFlowContext } from './flow/readable/types/readable-flow-context.js';
 
 /*--------*/
 
@@ -150,7 +151,7 @@ async function debugFlow01() {
 async function debugFlow02() {
   const controller = new AbortController();
 
-  const flowA = new ReadableFlow<number>(async function* (signal: AbortSignal) {
+  const flowA = new ReadableFlow<number>(async function* ({ signal }: ReadableFlowContext) {
     for (let i: number = 0; i < 4; i++) {
       signal.throwIfAborted();
       yield i;
