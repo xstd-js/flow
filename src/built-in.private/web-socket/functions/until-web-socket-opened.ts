@@ -1,6 +1,10 @@
+import type { Abortable } from '@xstd/abortable';
 import { WebSocketError } from '@xstd/custom-error';
 
-export function untilWebSocketOpened(webSocket: WebSocket, signal?: AbortSignal): Promise<void> {
+export function untilWebSocketOpened(
+  webSocket: WebSocket,
+  { signal }: Abortable = {},
+): Promise<void> {
   return new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
     signal?.throwIfAborted();
 

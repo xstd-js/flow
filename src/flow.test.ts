@@ -1,6 +1,9 @@
 import { sleep } from '@xstd/async-task';
 import { describe, test } from 'vitest';
+import { WebSocketFlow } from './built-in.private/web-socket/web-socket-flow.js';
+import { Drain } from './drain.private/drain.js';
 import { ReadableFlow } from './flow/readable/readable-flow.js';
+import { FlowReader } from './flow/readable/types/flow-reader.js';
 import { ReadableFlowContext } from './flow/readable/types/readable-flow-context.js';
 
 /*--------*/
@@ -110,7 +113,7 @@ async function debugFlow002() {
 async function debugFlow01() {
   const controller = new AbortController();
 
-  const flowA = new ReadableFlow<number>(async function* (signal: AbortSignal) {
+  const flowA = new ReadableFlow<number>(async function* () {
     // yield* Flow.fromIterable([0, 1, 2]).open(signal);
     try {
       yield* [0, 1, 2];
@@ -119,10 +122,9 @@ async function debugFlow01() {
     }
   });
 
-  const flowB = new ReadableFlow<number>(async function* (signal: AbortSignal) {
+  const flowB = new ReadableFlow<number>(async function* (ctx: ReadableFlowContext) {
     try {
-      yield* flowA.open(signal);
-      signal.throwIfAborted();
+      yield* flowA.use(ctx);
       yield 3;
     } finally {
       console.log('flowB done');
@@ -186,15 +188,62 @@ async function debugFlow02() {
   console.log('ok');
 }
 
+async function debugFlow03() {
+  const controller = new AbortController();
+
+  const ws = new WebSocketFlow('wss://echo.websocket.org/');
+
+  await Promise.allSettled([
+    (async () => {
+      for await (const i of ws.down.open(controller.signal)) {
+        console.log('down', i);
+      }
+    })(),
+    (async () => {
+      await ws.up.drain(
+        new ReadableFlow(async function* () {
+          while (true) {
+            const message: string = new Date().toISOString();
+            console.log('sending: ', message);
+            yield message;
+            await sleep(1000, controller.signal);
+          }
+        }),
+        controller.signal,
+      );
+    })(),
+    (async () => {
+      await sleep(3000, controller.signal);
+      controller.abort();
+    })(),
+  ]);
+
+  console.log('done');
+}
+
+/*---------*/
+
+export interface EntityProperty<GValue> {
+  readonly down: FlowReader<GValue>;
+  readonly up: Drain<GValue>;
+}
+
+export interface EntityEvent<GValue> {
+  readonly down: FlowReader<GValue>;
+}
+
+/*---------*/
+
 export async function debugFlow() {
   // await debugFlow00();
   // await debugFlow001();
   // await debugFlow002();
   // await debugFlow01();
-  await debugFlow02();
+  // await debugFlow02();
+  await debugFlow03();
 }
 
-describe('abc', () => {
+describe('main-flow-test', () => {
   globalThis.reportError = (error: unknown): void => {
     console.error(error);
   };

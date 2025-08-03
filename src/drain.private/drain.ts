@@ -44,6 +44,7 @@ export class Drain<GValue, GArguments extends readonly unknown[] = []> {
   // transform<GNewValue>(transformFnc: MapFunction<GNewValue, GValue>): Drain<GNewValue> {
   //   return new Drain<GNewValue>(
   //     (flow: ReadableFlow<GNewValue>, signal: AbortSignal): Promise<void> => {
+  //       // return this.drain(flow.transform<GValue>(transformFnc), signal);
   //       return this.drain(flow.transform<GValue>(transformFnc), signal);
   //     },
   //   );

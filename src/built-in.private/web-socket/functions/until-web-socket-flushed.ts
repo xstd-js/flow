@@ -1,8 +1,9 @@
+import { type Abortable } from '@xstd/abortable';
 import { sleep } from '@xstd/async-task';
 
 export async function untilWebSocketFlushed(
   webSocket: WebSocket,
-  signal?: AbortSignal,
+  { signal }: Abortable = {},
 ): Promise<void> {
   signal?.throwIfAborted();
 

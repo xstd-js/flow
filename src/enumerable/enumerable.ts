@@ -61,3 +61,21 @@ export interface AsyncEnumeratorObject<GIn, GOut, GReturn>
     AsyncDisposable {
   [Symbol.asyncIterator](): AsyncEnumeratorObject<GIn, GOut, GReturn>;
 }
+
+/*-------*/
+
+export async function getEnumeratorResultValue<GOut>(
+  result: EnumeratorResult<GOut, void>,
+): Promise<GOut> {
+  if (result.done) {
+    throw new Error('No value');
+  } else {
+    return result.value;
+  }
+}
+
+export async function getAsyncEnumeratorNextValue<GValue>(
+  enumerator: AsyncEnumerator<any, GValue, void>,
+): Promise<GValue> {
+  return getEnumeratorResultValue(await enumerator.next());
+}

@@ -72,13 +72,17 @@ export class WebSocketFlow {
 
     this.#up = new Drain<WebSocketUpValue>(
       async (flow: ReadableFlow<WebSocketUpValue>, signal: AbortSignal): Promise<void> => {
-        await using webSocketReader: FlowReader<WebSocket> = self.#sharedWebSocketFlow.open(signal);
+        await using webSocketReader: FlowReader<WebSocket> = self.#sharedWebSocketFlow.open(
+          ctx.signal,
+        );
 
         const webSocket: WebSocket = await getAsyncEnumeratorNextValue(webSocketReader);
 
+        const webSocket: WebSocket = sharedWebSocket.ref;
+
         for await (const value of flow.open(signal)) {
           webSocket.send(value);
-          await untilWebSocketFlushed(webSocket, { signal });
+          await untilWebSocketFlushed(webSocket, signal);
         }
       },
     );
@@ -105,7 +109,7 @@ export class WebSocketFlow {
       try {
         yield webSocket;
       } finally {
-        closeWebSocket(webSocket, signal.reason);
+        closeWebSocket(signal.reason);
         await untilWebSocketClosed(webSocket);
       }
     }).edge();

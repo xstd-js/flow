@@ -1,8 +1,9 @@
+import { type Abortable } from '@xstd/abortable';
 import { WebSocketError } from '@xstd/custom-error';
 
 export function untilWebSocketClosed(
   webSocket: WebSocket,
-  signal?: AbortSignal,
+  { signal }: Abortable = {},
 ): Promise<CloseEvent | undefined> {
   return new Promise<CloseEvent | undefined>(
     (

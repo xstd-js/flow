@@ -1,11 +1,11 @@
 import { abortify, sleep } from '@xstd/abortable';
 import { listen } from '@xstd/disposable';
 import {
-  FilterFunction,
-  FilterFunctionWithSubType,
-  MapFilterFunction,
-  MapFunction,
-  ReduceFunction,
+  type FilterFunction,
+  type FilterFunctionWithSubType,
+  type MapFilterFunction,
+  type MapFunction,
+  type ReduceFunction,
 } from '@xstd/functional';
 import { PushToPullOptions } from '../../shared/push-to-pull-options.js';
 import { flowSyncBridge } from '../bridge/flow-sync-bridge.js';
