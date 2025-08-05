@@ -1,22 +1,22 @@
 import { WebSocketError } from '@xstd/custom-error';
 import { listen } from '@xstd/disposable';
-import { Drain } from '../../drain.private/drain.js';
+import { Drain } from '../../drain/drain.js';
 import { flowSyncBridge } from '../../flow/bridge/flow-sync-bridge.js';
 import { ReadableFlow } from '../../flow/readable/readable-flow.js';
-import { ReadableFlowContext } from '../../flow/readable/types/readable-flow-context.js';
+import { type ReadableFlowContext } from '../../flow/readable/types/readable-flow-context.js';
 
 import { getAsyncEnumeratorNextValue } from '../../enumerable/enumerable.js';
-import { FlowReader } from '../../flow/readable/types/flow-reader.js';
-import { ReadableFlowIterator } from '../../flow/readable/types/readable-flow-iterator.js';
-import { PushToPullOptions } from '../../shared/push-to-pull-options.js';
-import { closeWebSocket } from './functions/close-web-socket.js';
-import { untilWebSocketClosed } from './functions/until-web-socket-closed.js';
-import { untilWebSocketFlushed } from './functions/until-web-socket-flushed.js';
-import { untilWebSocketOpened } from './functions/until-web-socket-opened.js';
+import { type FlowReader } from '../../flow/readable/types/flow-reader.js';
+import { type ReadableFlowIterator } from '../../flow/readable/types/readable-flow-iterator.js';
+import { type PushToPullOptions } from '../../shared/push-to-pull-options.js';
+import { closeWebSocket } from './functions.private/close-web-socket.js';
+import { untilWebSocketClosed } from './functions.private/until-web-socket-closed.js';
+import { untilWebSocketFlushed } from './functions.private/until-web-socket-flushed.js';
+import { untilWebSocketOpened } from './functions.private/until-web-socket-opened.js';
 import { type WebSocketDownValue } from './types/web-socket-down-value.js';
 import { type WebSocketUpValue } from './types/web-socket-up-value.js';
 
-export interface WebSocketChannelOptions extends PushToPullOptions {
+export interface WebSocketFlowOptions extends PushToPullOptions {
   readonly protocols?: string | readonly string[];
 }
 
@@ -29,15 +29,42 @@ export class WebSocketFlow {
   readonly #down: ReadableFlow<WebSocketDownValue>;
   readonly #up: Drain<WebSocketUpValue>;
 
-  constructor(url: string | URL, { protocols, ...bridgeOptions }: WebSocketChannelOptions = {}) {
+  constructor(url: string | URL, { protocols, ...bridgeOptions }: WebSocketFlowOptions = {}) {
     const self: this = this;
+
+    this.#url = url;
+    this.#protocols = protocols;
+    this.#bridgeOptions = bridgeOptions;
+
+    this.#sharedWebSocketFlow = new ReadableFlow<WebSocket>(async function* ({
+      signal,
+    }: ReadableFlowContext): ReadableFlowIterator<WebSocket> {
+      signal.throwIfAborted();
+
+      const webSocket: WebSocket = new WebSocket(self.#url, self.#protocols as string[]);
+      webSocket.binaryType = 'arraybuffer';
+
+      try {
+        await untilWebSocketOpened(webSocket, { signal });
+      } catch (error: unknown) {
+        await untilWebSocketClosed(webSocket, { signal });
+        throw error;
+      }
+
+      try {
+        yield webSocket;
+      } finally {
+        closeWebSocket(webSocket, signal.reason);
+        await untilWebSocketClosed(webSocket);
+      }
+    });
 
     this.#down = new ReadableFlow<WebSocketDownValue>(async function* (
       ctx: ReadableFlowContext,
     ): ReadableFlowIterator<WebSocketDownValue> {
-      await using webSocketReader: FlowReader<WebSocket> = self.#sharedWebSocketFlow.open(
-        ctx.signal,
-      );
+      await using webSocketReader: FlowReader<WebSocket> = self.#sharedWebSocketFlow
+        .edge()
+        .open(ctx.signal);
 
       const webSocket: WebSocket = await getAsyncEnumeratorNextValue(webSocketReader);
 
@@ -72,7 +99,9 @@ export class WebSocketFlow {
 
     this.#up = new Drain<WebSocketUpValue>(
       async (flow: ReadableFlow<WebSocketUpValue>, signal: AbortSignal): Promise<void> => {
-        await using webSocketReader: FlowReader<WebSocket> = self.#sharedWebSocketFlow.open(signal);
+        await using webSocketReader: FlowReader<WebSocket> = self.#sharedWebSocketFlow
+          .edge()
+          .open(signal);
 
         const webSocket: WebSocket = await getAsyncEnumeratorNextValue(webSocketReader);
 
@@ -82,33 +111,6 @@ export class WebSocketFlow {
         }
       },
     );
-
-    this.#url = url;
-    this.#protocols = protocols;
-    this.#bridgeOptions = bridgeOptions;
-
-    this.#sharedWebSocketFlow = new ReadableFlow<WebSocket>(async function* ({
-      signal,
-    }: ReadableFlowContext): ReadableFlowIterator<WebSocket> {
-      signal.throwIfAborted();
-
-      const webSocket: WebSocket = new WebSocket(self.#url, self.#protocols as string[]);
-      webSocket.binaryType = 'arraybuffer';
-
-      try {
-        await untilWebSocketOpened(webSocket, { signal });
-      } catch (error: unknown) {
-        await untilWebSocketClosed(webSocket, { signal });
-        throw error;
-      }
-
-      try {
-        yield webSocket;
-      } finally {
-        closeWebSocket(webSocket, signal.reason);
-        await untilWebSocketClosed(webSocket);
-      }
-    }).edge();
   }
 
   get down(): ReadableFlow<WebSocketDownValue> {

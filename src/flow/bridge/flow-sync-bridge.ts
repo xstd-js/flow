@@ -1,6 +1,6 @@
 import { abortify } from '@xstd/abortable';
-import { PushToPullOptions } from '../../shared/push-to-pull-options.js';
-import { FlowReader } from '../readable/types/flow-reader.js';
+import { type PushToPullOptions } from '../../shared/push-to-pull-options.js';
+import { type FlowReader } from '../readable/types/flow-reader.js';
 
 /*------*/
 
@@ -24,7 +24,7 @@ export interface FlowSyncBridge<GValue> {
   complete(): void;
 }
 
-export type FlowSyncBridgeResult<GValue> = [
+export type FlowSyncBridgeResult<GValue> = readonly [
   bridge: FlowSyncBridge<GValue>,
   reader: FlowReader<GValue>,
 ];

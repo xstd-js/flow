@@ -1,4 +1,4 @@
-import type { Abortable } from '@xstd/abortable';
+import { type Abortable } from '@xstd/abortable';
 import { WebSocketError } from '@xstd/custom-error';
 
 export function untilWebSocketOpened(

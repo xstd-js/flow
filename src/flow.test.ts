@@ -1,7 +1,8 @@
-import { sleep } from '@xstd/async-task';
+import { sleep } from '@xstd/abortable';
 import { describe, test } from 'vitest';
-import { WebSocketFlow } from './built-in.private/web-socket/web-socket-flow.js';
-import { Drain } from './drain.private/drain.js';
+import { WebSocketFlow } from './built-in/web-socket/web-socket-flow.js';
+import { Drain } from './drain/drain.js';
+import { inspectFlow } from './flow/readable/helpers/inspect-flow.js';
 import { ReadableFlow } from './flow/readable/readable-flow.js';
 import { FlowReader } from './flow/readable/types/flow-reader.js';
 import { ReadableFlowContext } from './flow/readable/types/readable-flow-context.js';
@@ -53,34 +54,36 @@ async function debugFlow002() {
     yield 2;
   };
 
-  const it: AsyncIterable<number> = {
-    [Symbol.asyncIterator](): AsyncIterator<number> {
-      return {
-        async next(): Promise<IteratorResult<number>> {
-          return {
-            done: false,
-            value: 0,
-          };
-        },
-        async throw(error?: unknown): Promise<IteratorResult<number>> {
-          console.log('error', error);
-          return {
-            done: true,
-            value: undefined,
-          };
-        },
-        async return(value: any): Promise<IteratorResult<number>> {
-          console.log('return', value);
-          return {
-            done: true,
-            value,
-          };
-        },
-      };
-    },
-  };
+  // const it: AsyncIterable<number> = {
+  //   [Symbol.asyncIterator](): AsyncIterator<number> {
+  //     return {
+  //       async next(): Promise<IteratorResult<number>> {
+  //         return {
+  //           done: false,
+  //           value: 0,
+  //         };
+  //       },
+  //       async throw(error?: unknown): Promise<IteratorResult<number>> {
+  //         console.log('error', error);
+  //         return {
+  //           done: true,
+  //           value: undefined,
+  //         };
+  //       },
+  //       async return(value: any): Promise<IteratorResult<number>> {
+  //         console.log('return', value);
+  //         return {
+  //           done: true,
+  //           value,
+  //         };
+  //       },
+  //     };
+  //   },
+  // };
 
-  // const it: AsyncGenerator<number> = a();
+  const it: AsyncGenerator<number> = a();
+  console.log(await it.return(undefined));
+  console.log(await it.return(undefined));
 
   // console.log(await it.next());
   // try {
@@ -103,11 +106,11 @@ async function debugFlow002() {
 
   // console.log(await Promise.all([it.next(), it.return(undefined), it.next()]));
 
-  for await (const i of it) {
-    console.log(i);
-    // return;
-    throw 'e';
-  }
+  // for await (const i of it) {
+  //   console.log(i);
+  //   // return;
+  //   throw 'e';
+  // }
 }
 
 async function debugFlow01() {
@@ -129,12 +132,12 @@ async function debugFlow01() {
     } finally {
       console.log('flowB done');
     }
-  });
-  // .map((i) => i * 2)
-  // .filter((i) => i > 2);
-  // .take(1);
-  // .drop(1);
-  // .inspect(inspectFlow('flowB'));
+  })
+    // .map((i) => i * 2)
+    // .filter((i) => i > 2);
+    // .take(1);
+    // .drop(1);
+    .inspect(inspectFlow('flowB'));
 
   // const a = flowA.open(controller.signal);
   // console.log(await a.next());
@@ -157,7 +160,7 @@ async function debugFlow02() {
     for (let i: number = 0; i < 4; i++) {
       signal.throwIfAborted();
       yield i;
-      await sleep(100, signal);
+      await sleep(100, { signal });
     }
   });
 
@@ -171,7 +174,7 @@ async function debugFlow02() {
       }
     })(),
     (async () => {
-      await sleep(250, controller.signal);
+      await sleep(250, { signal: controller.signal });
       for await (const i of flowC.open(controller.signal)) {
         console.log('flowC', i);
       }
@@ -206,14 +209,14 @@ async function debugFlow03() {
             const message: string = new Date().toISOString();
             console.log('sending: ', message);
             yield message;
-            await sleep(1000, controller.signal);
+            await sleep(1000, { signal: controller.signal });
           }
         }),
         controller.signal,
       );
     })(),
     (async () => {
-      await sleep(3000, controller.signal);
+      await sleep(3000, { signal: controller.signal });
       controller.abort();
     })(),
   ]);
@@ -237,10 +240,10 @@ export interface EntityEvent<GValue> {
 export async function debugFlow() {
   // await debugFlow00();
   // await debugFlow001();
-  // await debugFlow002();
+  await debugFlow002();
   // await debugFlow01();
   // await debugFlow02();
-  await debugFlow03();
+  // await debugFlow03();
 }
 
 describe('main-flow-test', () => {

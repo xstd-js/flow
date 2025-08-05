@@ -1,5 +1,4 @@
-import { type Abortable } from '@xstd/abortable';
-import { sleep } from '@xstd/async-task';
+import { type Abortable, sleep } from '@xstd/abortable';
 
 export async function untilWebSocketFlushed(
   webSocket: WebSocket,
@@ -13,6 +12,6 @@ export async function untilWebSocketFlushed(
         `WebSocket ${webSocket.readyState === WebSocket.CLOSING ? 'closing' : 'closed'}.`,
       );
     }
-    await sleep(0, signal);
+    await sleep(0, { signal });
   }
 }

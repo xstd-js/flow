@@ -1,5 +1,7 @@
 import { abortify, sleep } from '@xstd/abortable';
+import { isAsyncGeneratorFunction } from '@xstd/async-generator';
 import { listen } from '@xstd/disposable';
+import { EQUAL_FUNCTION_STRICT_EQUAL } from '@xstd/equal-function';
 import {
   type FilterFunction,
   type FilterFunctionWithSubType,
@@ -7,15 +9,18 @@ import {
   type MapFunction,
   type ReduceFunction,
 } from '@xstd/functional';
-import { PushToPullOptions } from '../../shared/push-to-pull-options.js';
+import { type None, NONE } from '@xstd/none';
+import { type PushToPullOptions } from '../../shared/push-to-pull-options.js';
 import { flowSyncBridge } from '../bridge/flow-sync-bridge.js';
 import { Flow } from '../flow/flow.js';
-import { FlowReader } from './types/flow-reader.js';
-import { FlowFlatMapFunction } from './types/methods/flat-map/flow-flat-map-function.js';
-import { FlowForkedValue } from './types/methods/fork/flow-forked-value.js';
-import { FlowInspectOptions } from './types/methods/inspect/flow-inspect-options.js';
-import { ReadableFlowContext } from './types/readable-flow-context.js';
-import { ReadableFlowIterator } from './types/readable-flow-iterator.js';
+import { type FlowReader } from './types/flow-reader.js';
+import { ReadableFlowDistinctOptions } from './types/methods/distinct/readable-flow-distinct-options.js';
+import { type FlowFlatMapFunction } from './types/methods/flat-map/flow-flat-map-function.js';
+import { type FlowForkedValue } from './types/methods/fork/flow-forked-value.js';
+import { type FlowInspectOptions } from './types/methods/inspect/flow-inspect-options.js';
+import { type ReadableFlowContext } from './types/readable-flow-context.js';
+import { type ReadableFlowIterator } from './types/readable-flow-iterator.js';
+import { ReadableFlowSource } from './types/readable-flow-source.js';
 
 export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> extends Flow<
   void,
@@ -56,18 +61,39 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
   //   });
   // }
 
-  static of<GValue>(...values: GValue[]): ReadableFlow<GValue, []> {
-    return new ReadableFlow<GValue, []>(async function* (
+  static override concat<GValue, GArguments extends readonly unknown[] = []>(
+    ...flows: ReadableFlow<GValue, GArguments>[]
+  ): ReadableFlow<GValue, GArguments> {
+    return new ReadableFlow<GValue, GArguments>(async function* (
       ctx: ReadableFlowContext,
+      ...args: GArguments
     ): ReadableFlowIterator<GValue> {
+      for (let i: number = 0; i < flows.length; i++) {
+        yield* flows[i].use(ctx, ...args);
+      }
+    });
+  }
+
+  static of<GValue>(...values: GValue[]): ReadableFlow<GValue, []> {
+    return new ReadableFlow<GValue, []>(async function* ({
+      signal,
+    }: ReadableFlowContext): ReadableFlowIterator<GValue> {
       for (let i: number = 0; i < values.length; i++) {
-        ctx.signal.throwIfAborted();
+        signal.throwIfAborted();
         yield values[i];
       }
     });
   }
 
-  static from<GValue>(input: Iterable<GValue> | AsyncIterable<GValue>): ReadableFlow<GValue, []> {
+  static from<GValue>(input: ReadableFlowSource<GValue>): ReadableFlow<GValue, []> {
+    if (input instanceof ReadableFlow) {
+      return input;
+    }
+
+    if (isAsyncGeneratorFunction(input)) {
+      return new ReadableFlow<GValue, []>(input);
+    }
+
     if (Symbol.iterator in input) {
       return this.#fromIterable<GValue>(input);
     }
@@ -80,14 +106,14 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
   }
 
   static #fromIterable<GValue>(input: Iterable<GValue>): ReadableFlow<GValue, []> {
-    return new ReadableFlow<GValue, []>(async function* (
-      ctx: ReadableFlowContext,
-    ): ReadableFlowIterator<GValue> {
+    return new ReadableFlow<GValue, []>(async function* ({
+      signal,
+    }: ReadableFlowContext): ReadableFlowIterator<GValue> {
       const iterator: Iterator<GValue> = input[Symbol.iterator]();
 
       try {
         while (true) {
-          ctx.signal.throwIfAborted();
+          signal.throwIfAborted();
 
           const result: IteratorResult<GValue> = iterator.next();
 
@@ -145,7 +171,14 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
 
   /* ARGUMENTS */
 
-  setupArguments(...args: GArguments): ReadableFlow<GValue, []> {
+  setArguments(
+    ...args: GArguments
+    // @ts-ignore
+  ): ReadableFlow<GValue, []> {
+    if (args.length === 0) {
+      return this as unknown as ReadableFlow<GValue, []>;
+    }
+
     const self: ReadableFlow<GValue, GArguments> = this;
     return new ReadableFlow<GValue, []>(async function* (
       ctx: ReadableFlowContext,
@@ -201,9 +234,27 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
       ...args: GArguments
     ): ReadableFlowIterator<GNewValue> {
       for await (const value of self.use(ctx, ...args)) {
-        const newValue: GNewValue | null = filterFnc(value);
-        if (newValue !== null) {
+        const newValue: GNewValue | None = filterFnc(value);
+        if (newValue !== NONE) {
           yield newValue;
+        }
+      }
+    });
+  }
+
+  distinct(
+    initialValue: GValue | None = NONE,
+    { equal = EQUAL_FUNCTION_STRICT_EQUAL }: ReadableFlowDistinctOptions<GValue> = {},
+  ): ReadableFlow<GValue, GArguments> {
+    const self: ReadableFlow<GValue, GArguments> = this;
+    return new ReadableFlow<GValue, GArguments>(async function* (
+      ctx: ReadableFlowContext,
+      ...args: GArguments
+    ): ReadableFlowIterator<GValue> {
+      for await (const value of self.use(ctx, ...args)) {
+        if (initialValue === NONE || !equal(value, initialValue)) {
+          initialValue = value;
+          yield value;
         }
       }
     });
@@ -246,6 +297,7 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
       signal.throwIfAborted();
 
       const controller: AbortController = new AbortController();
+
       const sharedSignal: AbortSignal = AbortSignal.any([signal, controller.signal]);
 
       await using untilActiveFlow: FlowReader<any> = untilSource.open(sharedSignal);
@@ -261,12 +313,14 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
 
       await using reader: FlowReader<GValue> = self.open(sharedSignal, ...args);
 
-      let result: IteratorResult<GValue>;
-      while (!(result = await Promise.race([reader.next(), untilPromise])).done) {
-        yield result.value;
+      try {
+        let result: IteratorResult<GValue>;
+        while (!(result = await Promise.race([reader.next(), untilPromise])).done) {
+          yield result.value;
+        }
+      } finally {
+        controller.abort();
       }
-
-      controller.abort();
     });
   }
 
@@ -299,7 +353,7 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
       ...args: GArguments
     ): ReadableFlowIterator<GNewValue> {
       for await (const value of self.use(ctx, ...args)) {
-        yield* flatMapFnc(value).use(ctx);
+        yield* ReadableFlow.from<GNewValue>(flatMapFnc(value)).use(ctx);
       }
     });
   }
@@ -337,15 +391,20 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
       let consumers: number = 0;
       let reader: FlowReader<GValue> | undefined;
 
-      type PartialFlowForkedValue = Pick<FlowForkedValue<GValue>, 'value' | 'time'>;
+      type PartialFlowForkedValue = Pick<FlowForkedValue<GValue>, 'value' | 'time' | 'index'>;
 
       const cachedQueries: Promise<IteratorResult<PartialFlowForkedValue, void>>[] = [];
+      let closePromise: Promise<void> | undefined;
 
       this.#fork = new ReadableFlow<FlowForkedValue<GValue>, GArguments>(async function* (
-        ctx: ReadableFlowContext,
+        { signal }: ReadableFlowContext,
         ...args: GArguments
       ): ReadableFlowIterator<FlowForkedValue<GValue>> {
-        ctx.signal.throwIfAborted();
+        signal.throwIfAborted();
+
+        if (closePromise !== undefined) {
+          await abortify(closePromise, { signal });
+        }
 
         consumers++;
 
@@ -360,6 +419,8 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
           while (true) {
             if (index === cachedQueries.length) {
               // └> we are ahead
+
+              const cachedQueryIndex: number = index;
 
               cachedQueries.push(
                 reader!
@@ -376,6 +437,7 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
                           value: {
                             value: result.value,
                             time: Date.now(),
+                            index: cachedQueryIndex,
                           } satisfies PartialFlowForkedValue,
                         };
                       }
@@ -389,15 +451,15 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
 
             const result: IteratorResult<PartialFlowForkedValue, void> = await abortify(
               cachedQuery,
-              { signal: ctx.signal },
+              { signal },
             );
 
             if (result.done) {
-              return;
+              return result.value;
             } else {
               yield {
                 ...result.value,
-                isEdge: index === cachedQueries.length,
+                total: cachedQueries.length,
               };
             }
           }
@@ -405,10 +467,24 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
           consumers--;
 
           if (consumers === 0) {
-            sharedController!.abort(ctx.signal.reason);
+            sharedController!.abort(signal.reason);
             sharedController = undefined;
-            reader = undefined;
             cachedQueries.length = 0;
+
+            const _reader: FlowReader<GValue> = reader!;
+            try {
+              const _closePromise = _reader.return();
+              closePromise = _closePromise.then(
+                () => {},
+                () => {},
+              );
+              await _closePromise;
+            } finally {
+              closePromise = undefined;
+              if (reader === _reader) {
+                reader = undefined;
+              }
+            }
           }
         }
       });
@@ -421,8 +497,8 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
    * @experimental
    */
   edge(): ReadableFlow<GValue, GArguments> {
-    return this.fork().mapFilter((forked: FlowForkedValue<GValue>): GValue | null => {
-      return forked.isEdge ? forked.value : null;
+    return this.fork().mapFilter((forked: FlowForkedValue<GValue>): GValue | None => {
+      return forked.index === forked.total - 1 ? forked.value : NONE;
     });
   }
 
@@ -454,6 +530,7 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
       try {
         for await (const value of self.use(ctx, ...args)) {
           run('next', value);
+          yield value;
         }
       } catch (error: unknown) {
         run('error', error);

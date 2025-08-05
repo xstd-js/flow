@@ -1,7 +1,8 @@
 export interface FlowForkedValue<GValue> {
   readonly value: GValue;
   readonly time: number;
-  readonly isEdge: boolean;
+  readonly index: number;
+  readonly total: number;
 }
 
 // export interface FlowForkedValueIsLastFunction {

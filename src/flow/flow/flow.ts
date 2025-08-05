@@ -1,28 +1,24 @@
 import { isAsyncGeneratorFunction } from '@xstd/async-generator';
 import { listen } from '@xstd/disposable';
-import { AsyncEnumeratorObject, EnumeratorResult } from '../../enumerable/enumerable.js';
-
-/*---*/
-
-// export type NoOptions = void | {};
+import { type AsyncEnumeratorObject, type EnumeratorResult } from '../../enumerable/enumerable.js';
 
 /*---*/
 
 export interface FlowFactory<GIn, GOut, GReturn, GArguments extends readonly unknown[] = []> {
-  (ctx: FlowFactoryContext<GIn, GReturn>, ...args: GArguments): AsyncGenerator<GOut, GReturn, void>;
+  (ctx: FlowContext<GIn, GReturn>, ...args: GArguments): AsyncGenerator<GOut, GReturn, void>;
 }
 
-export interface FlowFactoryContext<GIn, GReturn> {
-  readonly $next: FlowFactoryContextNext<GIn>;
-  readonly $return: FlowFactoryContextReturn<GReturn>;
+export interface FlowContext<GIn, GReturn> {
+  readonly $next: FlowContextNext<GIn>;
+  readonly $return: FlowContextReturn<GReturn>;
   readonly signal: AbortSignal;
 }
 
-export interface FlowFactoryContextNext<GIn> {
+export interface FlowContextNext<GIn> {
   (): GIn;
 }
 
-export interface FlowFactoryContextReturn<GReturn> {
+export interface FlowContextReturn<GReturn> {
   (): GReturn;
 }
 
@@ -35,7 +31,7 @@ export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[] = []
     ...flows: Flow<GIn, GOut, void, GArguments>[]
   ): Flow<GIn, GOut, void, GArguments> {
     return new Flow<GIn, GOut, void, GArguments>(async function* (
-      ctx: FlowFactoryContext<GIn, void>,
+      ctx: FlowContext<GIn, void>,
       ...args: GArguments
     ): AsyncGenerator<GOut, void, void> {
       for (let i: number = 0; i < flows.length; i++) {
@@ -152,8 +148,9 @@ export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[] = []
 
             if (Flow.debugMode) {
               console.warn(
-                'The `AsyncIterator` threw an error while the signal of this flow was aborted. This error is expected to be `signal.reason`.',
+                'The `AsyncIterator` threw an error while the signal of this flow was aborted. This error is expected to be `signal.reason`. Got:',
               );
+              console.error(error);
             }
           }
 
@@ -195,7 +192,13 @@ export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[] = []
       },
       [Symbol.asyncDispose]: async (): Promise<void> => {
         // return iterator[Symbol.asyncDispose]() as Promise<void>;
-        await enumerator.return(undefined as GReturn);
+        try {
+          await enumerator.return(undefined as GReturn);
+        } catch (error: unknown) {
+          if (!signal.aborted || error !== signal.reason) {
+            throw error;
+          }
+        }
       },
     };
 
@@ -204,7 +207,7 @@ export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[] = []
 
   // nest, transfer, adopt, use, expand
   use(
-    ctx: FlowFactoryContext<GIn, GReturn>,
+    ctx: FlowContext<GIn, GReturn>,
     ...args: GArguments
   ): AsyncEnumeratorObject<void, GOut, GReturn> {
     return this.#factory(ctx, ...args) as AsyncEnumeratorObject<void, GOut, GReturn>;

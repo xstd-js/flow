@@ -1,3 +1,3 @@
-import { type FlowFactoryContext } from '../../flow/flow.js';
+import { type FlowContext } from '../../flow/flow.js';
 
-export type ReadableFlowContext = FlowFactoryContext<void, void>;
+export type ReadableFlowContext = FlowContext<void, void>;
