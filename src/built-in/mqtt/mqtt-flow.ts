@@ -4,19 +4,22 @@ import mqtt, {
   type IPublishPacket,
   type ISubscriptionGrant,
   type MqttClient,
+  type MqttClientEventCallbacks,
 } from 'mqtt';
 import { Drain } from '../../drain/drain.js';
-import { flowSyncBridge } from '../../flow/bridge/flow-sync-bridge.js';
-import { ReadableFlow } from '../../flow/readable/readable-flow.js';
-import { type ReadableFlowContext } from '../../flow/readable/types/readable-flow-context.js';
 
 import { getAsyncEnumeratorNextValue } from '../../enumerable/enumerable.js';
-import { type FlowReader } from '../../flow/readable/types/flow-reader.js';
+import { flowSyncBridge } from '../../flow/bridge/flow-sync-bridge.js';
+import { ReadableFlow } from '../../flow/readable/readable-flow.js';
+import { type ReadableFlowForkOptions } from '../../flow/readable/types/methods/fork/readable-flow-fork-options.js';
+import { type ReadableFlowContext } from '../../flow/readable/types/readable-flow-context.js';
 import { type ReadableFlowIterator } from '../../flow/readable/types/readable-flow-iterator.js';
-import { type PushToPullOptions } from '../../shared/push-to-pull-options.js';
+import { type HavingQueuingStrategy } from '../../shared/queue-controller/classic/having-queuing-strategy.js';
+import { CountSharedQueue } from '../../shared/queue-controller/shared/built-in/count-shared-queue.js';
+import { listenTypedEventEmitter } from './functions.private/listen-typed-event-emitter.js';
 import { MqttTopic } from './topic/mqtt-topic.js';
 
-export interface MqttOptions {
+export interface MqttOptions extends Omit<ReadableFlowForkOptions, 'queuingStrategy'> {
   readonly clientId?: string;
   readonly username?: string;
   readonly password?: string;
@@ -43,13 +46,19 @@ export interface MqttSubscriptionOptions {
 }
 
 export class MqttFlow {
+  readonly #forkOptions: Omit<ReadableFlowForkOptions, 'queuingStrategy'>;
+
   readonly #sharedMqttClientFlow: ReadableFlow<MqttClient>;
 
   readonly #up: Drain<MqttUpPacket>;
   readonly #subscriptions: Map<string /* key */, ReadableFlow<MqttClient>>;
   readonly #activeSubscriptions: Set<string /* topic */>;
 
-  constructor(url: string | URL, options: MqttOptions = {}) {
+  constructor(url: string | URL, { disposeHook, ...mqttOptions }: MqttOptions = {}) {
+    this.#forkOptions = {
+      disposeHook,
+    };
+
     this.#sharedMqttClientFlow = new ReadableFlow<MqttClient>(async function* ({
       signal,
     }: ReadableFlowContext): ReadableFlowIterator<MqttClient> {
@@ -59,7 +68,7 @@ export class MqttFlow {
 
       const client: MqttClient = stack.adopt(
         await mqtt.connectAsync(url.toString(), {
-          ...options,
+          ...mqttOptions,
           reconnectPeriod: 0,
           autoUseTopicAlias: true,
           autoAssignTopicAlias: true,
@@ -76,15 +85,20 @@ export class MqttFlow {
       // client.setMaxListeners(50);
 
       yield client;
-    }).edge();
+    }).fork({
+      ...this.#forkOptions,
+      queuingStrategy: CountSharedQueue.one,
+    });
 
     this.#up = new Drain<MqttUpPacket>(
       async (flow: ReadableFlow<MqttUpPacket>, signal: AbortSignal): Promise<void> => {
         signal.throwIfAborted();
 
-        await using clientReader: FlowReader<MqttClient> = this.#sharedMqttClientFlow.open(signal);
+        await using stack: AsyncDisposableStack = new AsyncDisposableStack();
 
-        const client: MqttClient = await getAsyncEnumeratorNextValue(clientReader);
+        const client: MqttClient = await getAsyncEnumeratorNextValue(
+          stack.use(this.#sharedMqttClientFlow.open(signal)),
+        );
 
         for await (const { topic, payload, ...options } of flow.open(signal)) {
           await abortify(client.publishAsync(topic, payload as any, options), {
@@ -110,7 +124,7 @@ export class MqttFlow {
       retainAsPublished = false,
       retainHandling = 0,
     }: MqttSubscriptionOptions = {},
-  ): ReadableFlow<MqttDownPacket, [options?: PushToPullOptions]> {
+  ): ReadableFlow<MqttDownPacket, [options?: HavingQueuingStrategy]> {
     const key: string = JSON.stringify([topic, qos, noLocal, retainAsPublished, retainHandling]);
 
     let subscription: ReadableFlow<MqttClient> | undefined = this.#subscriptions.get(key);
@@ -145,16 +159,17 @@ export class MqttFlow {
 
         // SUBSCRIBE
         {
-          const [granted]: readonly ISubscriptionGrant[] = await client.subscribeAsync(topic, {
-            qos,
-            nl: noLocal,
-            rap: retainAsPublished,
-            rh: retainHandling,
-          });
-
-          stack.defer((): Promise<any> => {
-            return client.unsubscribeAsync(topic);
-          });
+          const [granted]: readonly ISubscriptionGrant[] = stack.adopt(
+            await client.subscribeAsync(topic, {
+              qos,
+              nl: noLocal,
+              rap: retainAsPublished,
+              rh: retainHandling,
+            }),
+            (): Promise<any> => {
+              return client.unsubscribeAsync(topic);
+            },
+          );
 
           signal.throwIfAborted();
 
@@ -166,14 +181,17 @@ export class MqttFlow {
         }
 
         yield client;
-      }).edge();
+      }).fork({
+        ...this.#forkOptions,
+        queuingStrategy: CountSharedQueue.one,
+      });
 
       this.#subscriptions.set(key, subscription);
     }
 
-    return new ReadableFlow<MqttDownPacket, [options?: PushToPullOptions]>(async function* (
+    return new ReadableFlow<MqttDownPacket, [options?: HavingQueuingStrategy]>(async function* (
       { signal }: ReadableFlowContext,
-      options?: PushToPullOptions,
+      options?: HavingQueuingStrategy,
     ): ReadableFlowIterator<MqttDownPacket> {
       signal.throwIfAborted();
 
@@ -194,67 +212,55 @@ export class MqttFlow {
       const [bridge, reader] = flowSyncBridge<MqttDownPacket>(signal, options);
 
       // ON ERROR
-      {
-        const onClientError = (error: unknown): void => {
-          bridge.error(error);
-        };
-
-        client.on('error', onClientError);
-
-        stack.defer((): void => {
-          client.off('error', onClientError);
-        });
-      }
+      stack.use(
+        listenTypedEventEmitter<MqttClientEventCallbacks, 'error'>(
+          client,
+          'error',
+          (error: unknown): void => {
+            bridge.error(error);
+          },
+        ),
+      );
 
       // ON DISCONNECT
-      {
-        const onClientDisconnect = (packet: IDisconnectPacket): void => {
-          if (packet.reasonCode === undefined || packet.reasonCode === 0x00) {
-            bridge.complete();
-          } else {
-            bridge.error(new Error('Disconnected', { cause: packet }));
-          }
-        };
-
-        client.on('disconnect', onClientDisconnect);
-
-        stack.defer((): void => {
-          client.off('disconnect', onClientDisconnect);
-        });
-      }
+      stack.use(
+        listenTypedEventEmitter<MqttClientEventCallbacks, 'disconnect'>(
+          client,
+          'disconnect',
+          (packet: IDisconnectPacket): void => {
+            if (packet.reasonCode === undefined || packet.reasonCode === 0x00) {
+              bridge.complete();
+            } else {
+              bridge.error(new Error('Disconnected', { cause: packet }));
+            }
+          },
+        ),
+      );
 
       // ON END
-      {
-        const onClientEnd = (): void => {
+      stack.use(
+        listenTypedEventEmitter<MqttClientEventCallbacks, 'end'>(client, 'end', (): void => {
           bridge.error(new Error('Client ended'));
-        };
-
-        client.on('end', onClientEnd);
-
-        stack.defer((): void => {
-          client.off('end', onClientEnd);
-        });
-      }
+        }),
+      );
 
       // ON MESSAGE
-      {
-        const topicMatcher: MqttTopic = new MqttTopic(topic);
+      const topicMatcher: MqttTopic = new MqttTopic(topic);
 
-        const onClientMessage = (topic: string, payload: Buffer, _packet: IPublishPacket): void => {
-          if (topicMatcher.matches(topic)) {
-            bridge.write({
-              topic,
-              payload,
-            });
-          }
-        };
-
-        client.on('message', onClientMessage);
-
-        stack.defer((): void => {
-          client.off('message', onClientMessage);
-        });
-      }
+      stack.use(
+        listenTypedEventEmitter<MqttClientEventCallbacks, 'message'>(
+          client,
+          'message',
+          (topic: string, payload: Buffer, _packet: IPublishPacket): void => {
+            if (topicMatcher.matches(topic)) {
+              bridge.next({
+                topic,
+                payload,
+              });
+            }
+          },
+        ),
+      );
 
       // DELEGATE TO THE BRIDGE
 

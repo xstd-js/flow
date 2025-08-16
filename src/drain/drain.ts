@@ -1,28 +1,35 @@
 import { type MapFunction } from '@xstd/functional';
-import { ReadableFlow } from '../flow/readable/readable-flow.js';
-import { type ReadableFlowSource } from '../flow/readable/types/readable-flow-source.js';
+import { type ReadableFlow } from '../flow/readable/readable-flow.js';
 
-export interface DrainFlow<GValue, GArguments extends readonly unknown[]> {
+export interface DrainFlow<
+  GValue,
+  GFlowArguments extends readonly unknown[] = [],
+  GDrainArguments extends readonly unknown[] = GFlowArguments,
+> {
   (
-    flow: ReadableFlow<GValue, []>,
+    flow: ReadableFlow<GValue, GFlowArguments>,
     signal: AbortSignal,
-    ...args: GArguments
+    ...args: GDrainArguments
   ): PromiseLike<void> | void;
 }
 
-export class Drain<GValue, GArguments extends readonly unknown[] = []> {
-  readonly #drain: DrainFlow<GValue, GArguments>;
+export class Drain<
+  GValue,
+  GFlowArguments extends readonly unknown[] = [],
+  GDrainArguments extends readonly unknown[] = [],
+> {
+  readonly #drain: DrainFlow<GValue, GFlowArguments, GDrainArguments>;
 
-  constructor(drain: DrainFlow<GValue, GArguments>) {
+  constructor(drain: DrainFlow<GValue, GFlowArguments, GDrainArguments>) {
     this.#drain = drain;
   }
 
   async drain(
-    flow: ReadableFlowSource<GValue>,
+    flow: ReadableFlow<GValue, GFlowArguments>,
     signal: AbortSignal,
-    ...args: GArguments
+    ...args: GDrainArguments
   ): Promise<void> {
-    await this.#drain(ReadableFlow.from<GValue>(flow), signal, ...args);
+    await this.#drain(flow, signal, ...args);
   }
 
   /* TRANSFORM */

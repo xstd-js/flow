@@ -1,10 +1,14 @@
 import { isAsyncGeneratorFunction } from '@xstd/async-generator';
 import { listen } from '@xstd/disposable';
+import { NONE } from '@xstd/none';
 import { type AsyncEnumeratorObject, type EnumeratorResult } from '../../enumerable/enumerable.js';
+import { tryAsyncFnc } from '../../shared/enum.private/result/functions/try-async-fnc.js';
+import { isResultOk } from '../../shared/enum.private/result/ok/is-result-ok.js';
+import { type Result } from '../../shared/enum.private/result/result.js';
 
 /*---*/
 
-export interface FlowFactory<GIn, GOut, GReturn, GArguments extends readonly unknown[] = []> {
+export interface FlowFactory<GIn, GOut, GReturn, GArguments extends readonly unknown[]> {
   (ctx: FlowContext<GIn, GReturn>, ...args: GArguments): AsyncGenerator<GOut, GReturn, void>;
 }
 
@@ -24,21 +28,18 @@ export interface FlowContextReturn<GReturn> {
 
 /*---*/
 
-export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[] = []> {
+export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[]> {
   static debugMode: boolean = true;
 
-  static concat<GIn, GOut, GArguments extends readonly unknown[] = []>(
-    ...flows: Flow<GIn, GOut, void, GArguments>[]
-  ): Flow<GIn, GOut, void, GArguments> {
-    return new Flow<GIn, GOut, void, GArguments>(async function* (
-      ctx: FlowContext<GIn, void>,
-      ...args: GArguments
-    ): AsyncGenerator<GOut, void, void> {
-      for (let i: number = 0; i < flows.length; i++) {
-        yield* flows[i].use(ctx, ...args);
-      }
-    });
-  }
+  // static concat<GIn, GOut>(...flows: Flow<GIn, GOut, void>[]): Flow<GIn, GOut, void> {
+  //   return new Flow<GIn, GOut, void>(async function* (
+  //     ctx: FlowContext<GIn, void>,
+  //   ): AsyncGenerator<GOut, void, void> {
+  //     for (let i: number = 0; i < flows.length; i++) {
+  //       yield* flows[i].use(ctx);
+  //     }
+  //   });
+  // }
 
   readonly #factory: FlowFactory<GIn, GOut, GReturn, GArguments>;
 
@@ -78,6 +79,20 @@ export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[] = []
 
     let queue: Promise<any> = Promise.resolve();
 
+    const enqueue = (
+      task: () => Promise<EnumeratorResult<GOut, GReturn>>,
+    ): Promise<EnumeratorResult<GOut, GReturn>> => {
+      return (queue = queue.then(task, task));
+    };
+
+    let iterate: (
+      task: () => Promise<EnumeratorResult<GOut, GReturn>>,
+      isTerminal: boolean,
+    ) => Promise<EnumeratorResult<GOut, GReturn>>;
+
+    // if (signal === undefined) {
+    //   iterate = enqueue;
+    // } else {
     let signalAbortEventListener: Disposable | undefined;
 
     const endSignalAbortEventListener = (): void => {
@@ -104,19 +119,34 @@ export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[] = []
       }
     };
 
-    const enqueue = (
+    /**
+     * When iterating:
+     *
+     * - if the signal aborts while an iteration is pending:
+     *   - the iteration must **reject** with the signal's `reason`, or _any error_ if the iteration is "terminal" (`return` or `throw`)
+     *   - OR it must **fulfil** with a _**done** result_
+     *   - -> any other behavior will report a warning
+     *
+     * - if the signal aborts while there's no pending iteration:
+     *  - if the iterator is done, do nothing (everything is already complete)
+     *  - else, we start a 100ms timer, while we expect the user to call one of the iteration methods (`next`, `return` or `throw`), to complete the flow.
+     */
+    iterate = (
       task: () => Promise<EnumeratorResult<GOut, GReturn>>,
+      isTerminal: boolean,
     ): Promise<EnumeratorResult<GOut, GReturn>> => {
-      const _task = (): Promise<EnumeratorResult<GOut, GReturn>> => {
+      return enqueue(async (): Promise<EnumeratorResult<GOut, GReturn>> => {
         endSignalAbortEventListener();
         endSignalAbortedButFlowNotDoneTimer();
 
-        return task();
-      };
+        const result: Result<EnumeratorResult<GOut, GReturn>> = await tryAsyncFnc(task);
 
-      return (queue = queue.then(_task, _task).then(
-        (result: EnumeratorResult<GOut, GReturn>): EnumeratorResult<GOut, GReturn> => {
-          if (!result.done) {
+        if (isResultOk(result)) {
+          // └> the iteration fulfilled
+
+          const iteratorResult: EnumeratorResult<GOut, GReturn> = result.value;
+
+          if (!iteratorResult.done) {
             // └> the iterator is not done
 
             if (signal.aborted) {
@@ -128,7 +158,7 @@ export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[] = []
                 );
               }
             } else {
-              // if the signal is aborted while the flow is not running, we must ensure that the user ends the flow by calling one of its methods: `next`, `throw` or `return`.
+              // => if the signal is aborted while the flow is not running, we must ensure that the user ends the flow by calling one of its methods: `next`, `throw` or `return`.
 
               // we start listening to the signal's abort event.
               signalAbortEventListener = listen(signal, 'abort', (): void => {
@@ -140,11 +170,14 @@ export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[] = []
             }
           }
 
-          return result;
-        },
-        (error: unknown): never => {
-          if (signal.aborted && error !== signal.reason) {
-            // => if the signal is aborted, then the iterator must reject with the signal's reason.
+          return iteratorResult;
+        } else {
+          // └> the iteration rejected
+
+          const error: unknown = result.error;
+
+          if (!isTerminal && signal.aborted && error !== signal.reason) {
+            // => if the signal is aborted, then the iterator must reject with the signal's reason, except if it's a "terminal" operation.
 
             if (Flow.debugMode) {
               console.warn(
@@ -155,13 +188,14 @@ export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[] = []
           }
 
           throw error;
-        },
-      ));
+        }
+      });
     };
+    // }
 
     const enumerator: AsyncEnumeratorObject<GIn, GOut, GReturn> = {
       next: (value: GIn): Promise<EnumeratorResult<GOut, GReturn>> => {
-        return enqueue(async (): Promise<EnumeratorResult<GOut, GReturn>> => {
+        return iterate(async (): Promise<EnumeratorResult<GOut, GReturn>> => {
           nextValue = value;
           hasNextValue = true;
           try {
@@ -169,15 +203,15 @@ export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[] = []
           } finally {
             hasNextValue = false;
           }
-        });
+        }, false);
       },
       throw: (error?: unknown): Promise<EnumeratorResult<GOut, GReturn>> => {
-        return enqueue((): Promise<EnumeratorResult<GOut, GReturn>> => {
+        return iterate((): Promise<EnumeratorResult<GOut, GReturn>> => {
           return iterator.throw(error);
-        });
+        }, true);
       },
       return: (value: GReturn): Promise<EnumeratorResult<GOut, GReturn>> => {
-        return enqueue(async (): Promise<EnumeratorResult<GOut, GReturn>> => {
+        return iterate(async (): Promise<EnumeratorResult<GOut, GReturn>> => {
           returnValue = value;
           hasReturnValue = true;
           try {
@@ -185,17 +219,19 @@ export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[] = []
           } finally {
             hasReturnValue = false;
           }
-        });
+        }, true);
       },
       [Symbol.asyncIterator]: (): AsyncEnumeratorObject<GIn, GOut, GReturn> => {
         return enumerator;
       },
       [Symbol.asyncDispose]: async (): Promise<void> => {
-        // return iterator[Symbol.asyncDispose]() as Promise<void>;
         try {
-          await enumerator.return(undefined as GReturn);
+          while (!(await enumerator.return(NONE as GReturn)).done);
         } catch (error: unknown) {
-          if (!signal.aborted || error !== signal.reason) {
+          // └> the `return` rejected
+
+          if (signal === undefined || !signal.aborted || error !== signal.reason) {
+            // if it's due to the `signal`, then we skip the error, else we throw it.
             throw error;
           }
         }

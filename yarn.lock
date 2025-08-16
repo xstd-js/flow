@@ -897,6 +897,7 @@ __metadata:
     "@xstd/equal-function": "npm:^0.0.1"
     "@xstd/functional": "npm:^0.3.0"
     "@xstd/none": "npm:^1.0.0"
+    "@xstd/noop": "npm:^1.0.0"
     mqtt: "npm:^5.14.0"
     prettier: "npm:^3.6.2"
     prettier-plugin-organize-imports: "npm:^4.2.0"
@@ -919,6 +920,13 @@ __metadata:
   version: 1.0.0
   resolution: "@xstd/none@npm:1.0.0"
   checksum: 10c0/6b2d936f0b75dc9efdce54e6617c360cfe1aafb48c0e26d28eb2cc77d3d2093360ecad15b6559a92ba217e9c8068de28070947de71a9cec8385115cdaecd720e
+  languageName: node
+  linkType: hard
+
+"@xstd/noop@npm:^1.0.0":
+  version: 1.0.0
+  resolution: "@xstd/noop@npm:1.0.0"
+  checksum: 10c0/464e6647dfbeea32366eb58af5c52047e08f42cffe8c69065ffe9a3d5aaf52c9b8fb5ca08ba3782770e2040b6716577967e41873ca374212be038e27c5495f05
   languageName: node
   linkType: hard
 

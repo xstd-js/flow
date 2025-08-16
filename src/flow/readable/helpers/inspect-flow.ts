@@ -17,13 +17,13 @@ const COLOR_SCHEME =
         close: '#fda31b',
       };
 
-export function inspectFlow<GValue>(
+export function inspectFlow<GValue, GArguments extends readonly unknown[]>(
   name: string,
   color: string = `hsl(${Math.floor(Math.random() * 360).toString(10)}deg, 100%, ${COLOR_SCHEME.light})`,
-): FlowInspectOptions<GValue> {
+): FlowInspectOptions<GValue, GArguments> {
   return {
-    open: (): void => {
-      console.log(`%c[OPEN]%c ${name}`, `color: ${COLOR_SCHEME.open}`, `color: ${color}`);
+    open: (...args: GArguments): void => {
+      console.log(`%c[OPEN]%c ${name}`, `color: ${COLOR_SCHEME.open}`, `color: ${color}`, ...args);
     },
     next: (value: GValue): void => {
       console.log(`%c[NEXT]%c ${name}`, `color: ${COLOR_SCHEME.next}`, `color: ${color}`, value);

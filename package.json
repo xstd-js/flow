@@ -1,6 +1,6 @@
 {
   "name": "@xstd/flow",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "main": "./index.js",
   "scripts": {
@@ -45,6 +45,7 @@
     "@xstd/equal-function": "^0.0.1",
     "@xstd/functional": "^0.3.0",
     "@xstd/none": "^1.0.0",
+    "@xstd/noop": "^1.0.0",
     "mqtt": "^5.14.0"
   }
 }

@@ -162,17 +162,33 @@ async function debugFlow02() {
       yield i;
       await sleep(100, { signal });
     }
-  });
+  }).inspect(inspectFlow('flowA'));
 
-  const flowB = flowA.edge();
-  const flowC = flowA.edge();
+  const flowB = flowA
+    .map((_) => _ * 2)
+    .inspect(inspectFlow('flowB'))
+    .fork();
+  const flowC = flowB
+    .map((_) => _ / 4)
+    .inspect(inspectFlow('flowC'))
+    .fork();
 
   await Promise.allSettled([
+    // (async () => {
+    //   for await (const i of flowA.open(controller.signal, { mode: 'fork' })) {
+    //     console.log('flowA', i);
+    //   }
+    // })(),
     (async () => {
       for await (const i of flowB.open(controller.signal)) {
         console.log('flowB', i);
       }
     })(),
+    // (async () => {
+    //   for await (const i of flowB.open(controller.signal, { mode: 'fork' })) {
+    //     console.log('flowB', i);
+    //   }
+    // })(),
     (async () => {
       await sleep(250, { signal: controller.signal });
       for await (const i of flowC.open(controller.signal)) {
@@ -185,10 +201,11 @@ async function debugFlow02() {
     // })(),
   ]);
 
-  for await (const i of flowB.open(new AbortController().signal)) {
-    console.log('flowB->', i);
-  }
-  console.log('ok');
+  // for await (const i of flowB.open({ mode: 'fork' })) {
+  //   console.log('flowB->', i);
+  // }
+
+  console.log('done');
 }
 
 async function debugFlow03() {
@@ -240,18 +257,18 @@ export interface EntityEvent<GValue> {
 export async function debugFlow() {
   // await debugFlow00();
   // await debugFlow001();
-  await debugFlow002();
+  // await debugFlow002();
   // await debugFlow01();
   // await debugFlow02();
-  // await debugFlow03();
+  await debugFlow03();
 }
 
-describe('main-flow-test', () => {
+describe('debug-flow', () => {
   globalThis.reportError = (error: unknown): void => {
     console.error(error);
   };
 
-  test('deg', async () => {
+  test('debug', async () => {
     await debugFlow();
   });
 });

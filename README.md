@@ -10,13 +10,15 @@
   <img height="64" alt="Shows a black logo in light color mode and a white one in dark color mode." src="https://github.com/xstd-js/website/blob/main/assets/logo/png/logo-large-light.png?raw=true">
 </picture>
 
+**WORK IN PROGRESS**
+
 ## @xstd/flow
 
 `Flow` is all about **reimagining the stream interface**.
 
 The goal is to identify what matters most in designing a robust stream interface, and to provide implementations that fulfill these requirements.
 
-To understand this necessity, please refer to the [MANIFEST](./MANIFEST.md).
+To understand this necessity, please refer to the [MANIFEST](MANIFEST.md).
 
 ### Examples:
 

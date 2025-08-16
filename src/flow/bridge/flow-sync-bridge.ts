@@ -1,23 +1,18 @@
 import { abortify } from '@xstd/abortable';
-import { type PushToPullOptions } from '../../shared/push-to-pull-options.js';
+import { NONE, type None } from '@xstd/none';
+
+import { type IteratorStep } from '../../enumerable/iterator-step.js';
+import { CountQueue } from '../../shared/queue-controller/classic/build-in/count-queue.js';
+import { type GenericQueue } from '../../shared/queue-controller/classic/generic-queue.js';
+import { type HavingQueuingStrategy } from '../../shared/queue-controller/classic/having-queuing-strategy.js';
 import { type FlowReader } from '../readable/types/flow-reader.js';
 
 /*------*/
 
-interface WriteEntry<GValue> {
-  readonly value: GValue;
-  readonly expirationDate: number;
-}
-
-type FlowSyncBridgePushState = 'active' | 'errored' | 'complete';
-type FlowSyncBridgePullState = 'active' | 'errored' | 'complete';
-
-/*------*/
-
-export interface FlowSyncBridgeOptions extends PushToPullOptions {}
+export interface FlowSyncBridgeOptions extends HavingQueuingStrategy {}
 
 export interface FlowSyncBridge<GValue> {
-  write(value: GValue): void;
+  next(value: GValue): void;
 
   error(error?: unknown): void;
 
@@ -33,123 +28,78 @@ export type FlowSyncBridgeResult<GValue> = readonly [
 
 export function flowSyncBridge<GValue>(
   signal: AbortSignal,
-  {
-    bufferSize = Number.POSITIVE_INFINITY,
-    windowTime = Number.POSITIVE_INFINITY,
-  }: FlowSyncBridgeOptions = {},
+  { queuingStrategy = CountQueue.zero }: FlowSyncBridgeOptions = {},
 ): FlowSyncBridgeResult<GValue> {
-  bufferSize = Math.max(0, bufferSize);
-  windowTime = Math.max(0, windowTime);
+  const queue: GenericQueue<IteratorStep<GValue>> = queuingStrategy<IteratorStep<GValue>>();
 
-  const writesBuffer: WriteEntry<GValue>[] = [];
-  let pendingRead: PromiseWithResolvers<void> | undefined;
+  let iteratorStepPromise: PromiseWithResolvers<IteratorStep<GValue>> | undefined;
+  let done: boolean = false;
 
-  let pushState: FlowSyncBridgePushState = 'active';
-  let pushError: unknown;
-  let pullState: FlowSyncBridgePullState = 'active';
-
-  const isActive = (): boolean => {
-    return pushState === 'active' && pullState === 'active';
-  };
-
-  const throwIfNotActive = (): void => {
-    if (!isActive()) {
-      throw new Error('The bridge is not active.');
+  const step = (step: IteratorStep<GValue>): void => {
+    if (done) {
+      throw new Error('Bridge already closed.');
     }
-  };
 
-  const removeExpiredWrites = (): void => {
-    const now: number = Date.now();
-    while (writesBuffer.length > 0 && writesBuffer[0].expirationDate < now) {
-      writesBuffer.shift();
-    }
-  };
+    queue.push(step);
 
-  const resolvePendingRead = (): void => {
-    if (pendingRead !== undefined) {
-      pendingRead.resolve();
-      pendingRead = undefined;
+    if (iteratorStepPromise !== undefined) {
+      iteratorStepPromise.resolve(step);
+      iteratorStepPromise = undefined;
     }
   };
 
   return [
     {
-      write: (value: GValue): void => {
-        throwIfNotActive();
-
-        if (bufferSize > 0 && windowTime > 0) {
-          writesBuffer.push({
-            value,
-            expirationDate: Date.now() + windowTime,
-          });
-
-          if (writesBuffer.length > bufferSize) {
-            writesBuffer.shift();
-          }
-        } else {
-          if (pendingRead !== undefined) {
-            writesBuffer.length = 0;
-            writesBuffer.push({
-              value,
-              expirationDate: Number.POSITIVE_INFINITY,
-            });
-          }
-        }
-
-        resolvePendingRead();
+      next: (value: GValue): void => {
+        step({
+          type: 'next',
+          value,
+        });
       },
       error: (error?: unknown): void => {
-        throwIfNotActive();
-
-        pushState = 'errored';
-        pushError = error;
-
-        resolvePendingRead();
+        step({
+          type: 'error',
+          error,
+        });
       },
       complete: (): void => {
-        throwIfNotActive();
-
-        pushState = 'complete';
-
-        resolvePendingRead();
+        step({
+          type: 'complete',
+        });
       },
     },
     (async function* (): AsyncGenerator<GValue, void, void> {
       try {
+        let iteratorStep: IteratorStep<GValue> | undefined;
+
         while (true) {
           signal.throwIfAborted();
 
-          // remove the expired writes
-          removeExpiredWrites();
+          let cachedIteratorStep: IteratorStep<GValue> | None;
+          // dequeue the steps of the queue that have already been treated
+          while ((cachedIteratorStep = queue.pull()) === iteratorStep);
 
-          if (writesBuffer.length > 0) {
-            // └> the _read_ operation occurs **after** the _write_ operation
-
-            // consume and return the oldest _write_ operation
-            yield writesBuffer.shift()!.value;
-            // @ts-ignore
-          } else if (pushState === 'errored') {
-            throw pushError;
-            // @ts-ignore
-          } else if (pushState === 'complete') {
-            return;
+          if (cachedIteratorStep === NONE) {
+            iteratorStep = await abortify(
+              (iteratorStepPromise = Promise.withResolvers<IteratorStep<GValue>>()).promise,
+              {
+                signal,
+              },
+            );
           } else {
-            // └> the _read_ operation occurthis.#writesBuffers **before** the _write_ operation
+            iteratorStep = cachedIteratorStep;
+          }
 
-            console.assert(pendingRead === undefined);
-
-            // create a promise for the reader that resolves on the next write
-            // and wait for the next _write_ operation to resolve this _read_ operation
-            await abortify((pendingRead = Promise.withResolvers<void>()).promise, { signal });
+          if (iteratorStep.type === 'next') {
+            yield iteratorStep.value;
+          } else if (iteratorStep.type === 'error') {
+            throw iteratorStep.error;
+          } else {
+            return;
           }
         }
-      } catch (error: unknown) {
-        pullState = 'errored';
-        throw error;
       } finally {
-        if (pullState === 'active') {
-          pullState = 'complete';
-        }
+        done = true;
       }
     })(),
   ];

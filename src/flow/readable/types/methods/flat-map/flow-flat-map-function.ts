@@ -1,5 +1,5 @@
-import { type ReadableFlowSource } from '../../readable-flow-source.js';
+import { type ReadableFlow } from '../../../readable-flow.js';
 
 export interface FlowFlatMapFunction<GIn, GOut> {
-  (value: GIn): ReadableFlowSource<GOut>;
+  (value: GIn): ReadableFlow<GOut, []>;
 }
