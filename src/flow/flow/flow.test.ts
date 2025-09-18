@@ -10,6 +10,22 @@ describe('Flow', () => {
   });
 
   describe('open', () => {
+    describe('arguments', () => {
+      it('should receive arguments', async () => {
+        const flow = new Flow<void, void, void, [first: number]>(async function* (
+          _ctx: FlowContext<void, void>,
+          first: number,
+        ): AsyncGenerator<void, void, void> {
+          expect(first).toBe(1);
+        });
+
+        expect(await flow.open(controller.signal, 1).next()).toEqual({
+          done: true,
+          value: undefined,
+        });
+      });
+    });
+
     describe('next', () => {
       describe('output', () => {
         it('should emit a value', async () => {

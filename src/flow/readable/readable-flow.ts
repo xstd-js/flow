@@ -10,11 +10,11 @@ import {
 } from '@xstd/functional';
 import { type None, NONE } from '@xstd/none';
 import { noop } from '@xstd/noop';
-import { type HavingQueuingStrategy } from '../../shared/queue-controller/classic/having-queuing-strategy.js';
-import { CountSharedQueue } from '../../shared/queue-controller/shared/built-in/count-shared-queue.js';
-import { type SharedQueueFork } from '../../shared/queue-controller/shared/shared-queue-fork.js';
-import { type SharedQueue } from '../../shared/queue-controller/shared/shared-queue.js';
-import { flowSyncBridge } from '../bridge/flow-sync-bridge.js';
+import type { AsyncPullQueue } from '../../shared/queue/async-pull-queue/async-pull-queue.js';
+import { EdgePushToAsyncPullQueueFactory } from '../../shared/queue/bridge/push-to-async-pull-queue/built-in/edge-push-to-async-pull-queue-factory/edge-push-to-async-pull-queue-factory.js';
+import { type HavingQueuingStrategy } from '../../shared/queue/bridge/push-to-async-pull-queue/having-queuing-strategy.js';
+import { EdgePushToSharedAsyncPullQueueFactory } from '../../shared/queue/bridge/shared/built-in/edge-push-to-shared-async-pull-queue-factory/edge-push-to-shared-async-pull-queue-factory.js';
+import type { PushToSharedAsyncPullQueue } from '../../shared/queue/bridge/shared/push-to-shared-async-pull-queue.js';
 import { Flow } from '../flow/flow.js';
 import { type FlowReader } from './types/flow-reader.js';
 import { type ReadableFlowDistinctOptions } from './types/methods/distinct/readable-flow-distinct-options.js';
@@ -33,20 +33,22 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
   static when<GEvent extends Event>(
     target: EventTarget,
     type: string,
-  ): ReadableFlow<GEvent, [options?: HavingQueuingStrategy]> {
-    return new ReadableFlow<GEvent, [options?: HavingQueuingStrategy]>(async function* (
+  ): ReadableFlow<GEvent, [options?: HavingQueuingStrategy<GEvent>]> {
+    return new ReadableFlow<GEvent, [options?: HavingQueuingStrategy<GEvent>]>(async function* (
       { signal }: ReadableFlowContext,
-      options?: HavingQueuingStrategy,
+      {
+        queuingStrategy = EdgePushToAsyncPullQueueFactory.edge<GEvent>(),
+      }: HavingQueuingStrategy<GEvent> = {},
     ): ReadableFlowIterator<GEvent> {
       signal.throwIfAborted();
 
-      const [bridge, reader] = flowSyncBridge<GEvent>(signal, options);
+      const { push, pull } = queuingStrategy.create(signal);
 
       using _eventListener: Disposable = listen(target, type, (event: Event): void => {
-        void bridge.next(event as GEvent);
+        push.next(event as GEvent);
       });
 
-      yield* reader;
+      yield* pull;
     });
   }
 
@@ -394,9 +396,9 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
   // }
 
   fork({
-    queuingStrategy = CountSharedQueue.zero,
+    queuingStrategy = EdgePushToSharedAsyncPullQueueFactory.edge<any>(),
     disposeHook,
-  }: ReadableFlowForkOptions = {}): ReadableFlow<GValue, GArguments> {
+  }: ReadableFlowForkOptions<any> = {}): ReadableFlow<GValue, GArguments> {
     const self: ReadableFlow<GValue, GArguments> = this;
 
     type IteratorPromise = Promise<IteratorResult<GValue, void>>;
@@ -404,7 +406,7 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
     let consumers: number = 0;
     let readerController: AbortController | undefined;
     let reader: FlowReader<GValue> | undefined;
-    let sharedQueue: SharedQueue<IteratorPromise> | undefined;
+    let sharedQueue: PushToSharedAsyncPullQueue<GValue> | undefined;
     let iteratorStepPromise: IteratorPromise | undefined;
 
     let disposeController: AbortController | undefined;
@@ -433,10 +435,15 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
         if (reader === undefined) {
           readerController = new AbortController();
           reader = self.open(readerController.signal, ...args);
-          sharedQueue = queuingStrategy<IteratorPromise>();
+          sharedQueue = queuingStrategy.create(readerController.signal);
         }
 
-        const localQueue: SharedQueueFork<IteratorPromise> = sharedQueue!.fork();
+        const localQueue: AsyncPullQueue<GValue> = sharedQueue!.fork();
+
+        // TODO continue here
+
+        yield* localQueue;
+
         let localIteratorStepPromise: IteratorPromise | undefined;
 
         while (true) {
@@ -513,6 +520,127 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
       }
     });
   }
+
+  // fork({
+  //   queuingStrategy = CountSharedQueue.zero,
+  //   disposeHook,
+  // }: ReadableFlowForkOptions = {}): ReadableFlow<GValue, GArguments> {
+  //   const self: ReadableFlow<GValue, GArguments> = this;
+  //
+  //   type IteratorPromise = Promise<IteratorResult<GValue, void>>;
+  //
+  //   let consumers: number = 0;
+  //   let readerController: AbortController | undefined;
+  //   let reader: FlowReader<GValue> | undefined;
+  //   let sharedQueue: SharedQueue<IteratorPromise> | undefined;
+  //   let iteratorStepPromise: IteratorPromise | undefined;
+  //
+  //   let disposeController: AbortController | undefined;
+  //   let disposePromise: Promise<void> | undefined;
+  //
+  //   return new ReadableFlow<GValue, GArguments>(async function* (
+  //     { signal }: ReadableFlowContext,
+  //     ...args: GArguments
+  //   ): ReadableFlowIterator<GValue> {
+  //     signal.throwIfAborted();
+  //
+  //     if (disposeController !== undefined) {
+  //       // abort postponed dispose
+  //       disposeController.abort(new Error('Cancelled.'));
+  //       disposeController = undefined;
+  //       disposePromise = undefined;
+  //     }
+  //
+  //     if (disposePromise !== undefined) {
+  //       await abortify(disposePromise.catch(noop), { signal });
+  //     }
+  //
+  //     consumers++;
+  //
+  //     try {
+  //       if (reader === undefined) {
+  //         readerController = new AbortController();
+  //         reader = self.open(readerController.signal, ...args);
+  //         sharedQueue = queuingStrategy<IteratorPromise>();
+  //       }
+  //
+  //       const localQueue: SharedQueueFork<IteratorPromise> = sharedQueue!.fork();
+  //       let localIteratorStepPromise: IteratorPromise | undefined;
+  //
+  //       while (true) {
+  //         let cachedIteratorStepPromise: IteratorPromise | None;
+  //         // dequeue the steps of the queue that have already been treated
+  //         while ((cachedIteratorStepPromise = localQueue.pull()) === localIteratorStepPromise);
+  //
+  //         if (cachedIteratorStepPromise === NONE) {
+  //           // └> no step in the queue
+  //           if (iteratorStepPromise === undefined) {
+  //             // └> no shared step
+  //             // => we need to iterate
+  //             iteratorStepPromise = reader.next().finally((): void => {
+  //               iteratorStepPromise = undefined;
+  //             });
+  //             // append the step to the queue
+  //             sharedQueue!.push(iteratorStepPromise);
+  //           }
+  //           localIteratorStepPromise = iteratorStepPromise;
+  //         } else {
+  //           // => use the cached step
+  //           localIteratorStepPromise = cachedIteratorStepPromise;
+  //         }
+  //
+  //         const result: IteratorResult<GValue, void> = await abortify(localIteratorStepPromise, {
+  //           signal,
+  //         });
+  //
+  //         if (result.done) {
+  //           return result.value;
+  //         } else {
+  //           yield result.value;
+  //           // NOTE: we do not propagate any `.throw` directly to the reader, similar to `.return`.
+  //         }
+  //       }
+  //     } finally {
+  //       consumers--;
+  //
+  //       if (consumers === 0) {
+  //         const dispose = async (): Promise<void> => {
+  //           readerController!.abort(signal.reason);
+  //           readerController = undefined;
+  //
+  //           try {
+  //             return await reader![Symbol.asyncDispose]();
+  //           } finally {
+  //             reader = undefined;
+  //             sharedQueue = undefined;
+  //             disposeController = undefined;
+  //             disposePromise = undefined;
+  //           }
+  //         };
+  //
+  //         if (disposeHook === undefined) {
+  //           await (disposePromise = dispose());
+  //         } else {
+  //           const controller: AbortController = new AbortController();
+  //           const { promise, resolve, reject } = Promise.withResolvers<any>();
+  //           disposeController = controller;
+  //           disposePromise = promise;
+  //
+  //           disposeHook(controller.signal, (): Promise<void> => {
+  //             controller.signal.throwIfAborted();
+  //             controller.abort(new Error('Already disposed.'));
+  //
+  //             return dispose().then(resolve, reject);
+  //           });
+  //
+  //           if (controller.signal.aborted) {
+  //             await disposePromise;
+  //           }
+  //         }
+  //       }
+  //     }
+  //   });
+  // }
 
   /* INSPECT THE FLOW */
 

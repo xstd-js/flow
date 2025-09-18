@@ -4,7 +4,7 @@ import { NONE, type None } from '@xstd/none';
 import { type IteratorStep } from '../../enumerable/iterator-step.js';
 import { CountQueue } from '../../shared/queue-controller/classic/build-in/count-queue.js';
 import { type GenericQueue } from '../../shared/queue-controller/classic/generic-queue.js';
-import { type HavingQueuingStrategy } from '../../shared/queue-controller/classic/having-queuing-strategy.js';
+import { type HavingQueuingStrategy } from '../../shared/queue/push-to-pull/having-queuing-strategy.js';
 import { type FlowReader } from '../readable/types/flow-reader.js';
 
 /*------*/

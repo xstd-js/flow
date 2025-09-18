@@ -1,0 +1,137 @@
+import { abortify } from '@xstd/abortable';
+import { NONE, None } from '@xstd/none';
+import type { IteratorStep } from '../../../../enumerable/iterator-step.js';
+import { PullQueue, PushQueue, PushToPullQueue } from '../queue.js';
+
+export class PushToPullCountQueue<GValue> extends PushToPullQueue<GValue> {
+  static factory(count: number): GenericQueueFactory {
+    return <GValue>() => new PushToPullCountQueue<GValue>(count);
+  }
+
+  static #zero: GenericQueueFactory;
+  static get zero(): GenericQueueFactory {
+    if (this.#zero === undefined) {
+      this.#zero = <GValue>() => new PushToPullCountQueue<GValue>(0);
+    }
+    return this.#zero;
+  }
+
+  static #one: GenericQueueFactory;
+  static get one(): GenericQueueFactory {
+    if (this.#one === undefined) {
+      this.#one = <GValue>() => new PushToPullCountQueue<GValue>(1);
+    }
+    return this.#one;
+  }
+
+  static #every: GenericQueueFactory;
+  static get every(): GenericQueueFactory {
+    if (this.#every === undefined) {
+      this.#every = <GValue>() => new PushToPullCountQueue<GValue>(Number.POSITIVE_INFINITY);
+    }
+    return this.#every;
+  }
+
+  readonly #count: number;
+  readonly #queue: IteratorStep<GValue>[];
+
+  #iteratorStepPromise: PromiseWithResolvers<IteratorStep<GValue>> | undefined;
+  #done: boolean;
+
+  constructor(count: number) {
+    super({
+      push: new PushQueue<GValue>({
+        next: (value: GValue): void => {
+          this.#step({
+            type: 'next',
+            value,
+          });
+        },
+        error: (error?: unknown): void => {
+          this.#step({
+            type: 'error',
+            error,
+          });
+        },
+        complete: (): void => {
+          this.#step({
+            type: 'complete',
+          });
+        },
+      }),
+      pull: new PullQueue<GValue>(
+        (async function* (): AsyncGenerator<GValue, void, void> {
+          try {
+            let iteratorStep: IteratorStep<GValue> | undefined;
+
+            while (true) {
+              signal.throwIfAborted();
+
+              let cachedIteratorStep: IteratorStep<GValue> | None;
+              // dequeue the steps of the queue that have already been treated
+              while ((cachedIteratorStep = queue.pull()) === iteratorStep);
+
+              if (cachedIteratorStep === NONE) {
+                iteratorStep = await abortify(
+                  (iteratorStepPromise = Promise.withResolvers<IteratorStep<GValue>>()).promise,
+                  {
+                    signal,
+                  },
+                );
+              } else {
+                iteratorStep = cachedIteratorStep;
+              }
+
+              if (iteratorStep.type === 'next') {
+                yield iteratorStep.value;
+              } else if (iteratorStep.type === 'error') {
+                throw iteratorStep.error;
+              } else {
+                return;
+              }
+            }
+          } finally {
+            done = true;
+          }
+        })(),
+      ),
+    });
+
+    this.#count = Math.max(0, count);
+    this.#queue = [];
+    this.#done = false;
+  }
+
+  #step(step: IteratorStep<GValue>): void {
+    if (this.#done) {
+      throw new Error('Bridge already closed.');
+    }
+
+    this.#queue.push(step);
+
+    if (this.#queue.length > this.#count) {
+      this.#queue.shift();
+    }
+
+    if (this.#iteratorStepPromise !== undefined) {
+      this.#iteratorStepPromise.resolve(step);
+      this.#iteratorStepPromise = undefined;
+    }
+  }
+
+  // push(value: GValue): void {
+  //   this.#queue.push(value);
+  //
+  //   if (this.#queue.length > this.#count) {
+  //     this.#queue.shift();
+  //   }
+  // }
+  //
+  // pull(): GValue | None {
+  //   if (this.#queue.length === 0) {
+  //     return NONE;
+  //   } else {
+  //     return this.#queue.shift()!;
+  //   }
+  // }
+}

@@ -9,13 +9,13 @@ import mqtt, {
 import { Drain } from '../../drain/drain.js';
 
 import { getAsyncEnumeratorNextValue } from '../../enumerable/enumerable.js';
-import { flowSyncBridge } from '../../flow/bridge/flow-sync-bridge.js';
 import { ReadableFlow } from '../../flow/readable/readable-flow.js';
 import { type ReadableFlowForkOptions } from '../../flow/readable/types/methods/fork/readable-flow-fork-options.js';
 import { type ReadableFlowContext } from '../../flow/readable/types/readable-flow-context.js';
 import { type ReadableFlowIterator } from '../../flow/readable/types/readable-flow-iterator.js';
-import { type HavingQueuingStrategy } from '../../shared/queue-controller/classic/having-queuing-strategy.js';
 import { CountSharedQueue } from '../../shared/queue-controller/shared/built-in/count-shared-queue.js';
+import { CountPushToAsyncPullQueueFactory } from '../../shared/queue/bridge/push-to-async-pull-queue/built-in/count-push-to-pull-queue-factory/count-push-to-async-pull-queue-factory.js';
+import { type HavingQueuingStrategy } from '../../shared/queue/bridge/push-to-async-pull-queue/having-queuing-strategy.js';
 import { listenTypedEventEmitter } from './functions.private/listen-typed-event-emitter.js';
 import { MqttTopic } from './topic/mqtt-topic.js';
 
@@ -124,7 +124,7 @@ export class MqttFlow {
       retainAsPublished = false,
       retainHandling = 0,
     }: MqttSubscriptionOptions = {},
-  ): ReadableFlow<MqttDownPacket, [options?: HavingQueuingStrategy]> {
+  ): ReadableFlow<MqttDownPacket, [options?: HavingQueuingStrategy<MqttDownPacket>]> {
     const key: string = JSON.stringify([topic, qos, noLocal, retainAsPublished, retainHandling]);
 
     let subscription: ReadableFlow<MqttClient> | undefined = this.#subscriptions.get(key);
@@ -189,82 +189,86 @@ export class MqttFlow {
       this.#subscriptions.set(key, subscription);
     }
 
-    return new ReadableFlow<MqttDownPacket, [options?: HavingQueuingStrategy]>(async function* (
-      { signal }: ReadableFlowContext,
-      options?: HavingQueuingStrategy,
-    ): ReadableFlowIterator<MqttDownPacket> {
-      signal.throwIfAborted();
+    return new ReadableFlow<MqttDownPacket, [options?: HavingQueuingStrategy<MqttDownPacket>]>(
+      async function* (
+        { signal }: ReadableFlowContext,
+        {
+          queuingStrategy = CountPushToAsyncPullQueueFactory.zero<MqttDownPacket>(),
+        }: HavingQueuingStrategy<MqttDownPacket> = {},
+      ): ReadableFlowIterator<MqttDownPacket> {
+        signal.throwIfAborted();
 
-      await using stack: AsyncDisposableStack = new AsyncDisposableStack();
+        await using stack: AsyncDisposableStack = new AsyncDisposableStack();
 
-      // GET CLIENT AND SUBSCRIBE
+        // GET CLIENT AND SUBSCRIBE
 
-      const client: MqttClient = await getAsyncEnumeratorNextValue(
-        stack.use(subscription.open(signal)),
-      );
+        const client: MqttClient = await getAsyncEnumeratorNextValue(
+          stack.use(subscription.open(signal)),
+        );
 
-      if (!client.connected) {
-        throw new Error('MqttClient closed.');
-      }
+        if (!client.connected) {
+          throw new Error('MqttClient closed.');
+        }
 
-      // BRIDGE
+        // BRIDGE
 
-      const [bridge, reader] = flowSyncBridge<MqttDownPacket>(signal, options);
+        const { push, pull } = queuingStrategy.create(signal);
 
-      // ON ERROR
-      stack.use(
-        listenTypedEventEmitter<MqttClientEventCallbacks, 'error'>(
-          client,
-          'error',
-          (error: unknown): void => {
-            bridge.error(error);
-          },
-        ),
-      );
+        // ON ERROR
+        stack.use(
+          listenTypedEventEmitter<MqttClientEventCallbacks, 'error'>(
+            client,
+            'error',
+            (error: unknown): void => {
+              push.error(error);
+            },
+          ),
+        );
 
-      // ON DISCONNECT
-      stack.use(
-        listenTypedEventEmitter<MqttClientEventCallbacks, 'disconnect'>(
-          client,
-          'disconnect',
-          (packet: IDisconnectPacket): void => {
-            if (packet.reasonCode === undefined || packet.reasonCode === 0x00) {
-              bridge.complete();
-            } else {
-              bridge.error(new Error('Disconnected', { cause: packet }));
-            }
-          },
-        ),
-      );
+        // ON DISCONNECT
+        stack.use(
+          listenTypedEventEmitter<MqttClientEventCallbacks, 'disconnect'>(
+            client,
+            'disconnect',
+            (packet: IDisconnectPacket): void => {
+              if (packet.reasonCode === undefined || packet.reasonCode === 0x00) {
+                push.complete();
+              } else {
+                push.error(new Error('Disconnected', { cause: packet }));
+              }
+            },
+          ),
+        );
 
-      // ON END
-      stack.use(
-        listenTypedEventEmitter<MqttClientEventCallbacks, 'end'>(client, 'end', (): void => {
-          bridge.error(new Error('Client ended'));
-        }),
-      );
+        // ON END
+        stack.use(
+          listenTypedEventEmitter<MqttClientEventCallbacks, 'end'>(client, 'end', (): void => {
+            push.error(new Error('Client ended'));
+          }),
+        );
 
-      // ON MESSAGE
-      const topicMatcher: MqttTopic = new MqttTopic(topic);
+        // ON MESSAGE
+        const topicMatcher: MqttTopic = new MqttTopic(topic);
 
-      stack.use(
-        listenTypedEventEmitter<MqttClientEventCallbacks, 'message'>(
-          client,
-          'message',
-          (topic: string, payload: Buffer, _packet: IPublishPacket): void => {
-            if (topicMatcher.matches(topic)) {
-              bridge.next({
-                topic,
-                payload,
-              });
-            }
-          },
-        ),
-      );
+        stack.use(
+          listenTypedEventEmitter<MqttClientEventCallbacks, 'message'>(
+            client,
+            'message',
+            (topic: string, payload: Buffer, _packet: IPublishPacket): void => {
+              if (topicMatcher.matches(topic)) {
+                push.next({
+                  topic,
+                  payload,
+                });
+              }
+            },
+          ),
+        );
 
-      // DELEGATE TO THE BRIDGE
+        // DELEGATE TO THE BRIDGE
 
-      yield* reader;
-    });
+        yield* pull;
+      },
+    );
   }
 }

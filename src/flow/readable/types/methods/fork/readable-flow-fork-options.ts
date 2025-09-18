@@ -1,6 +1,6 @@
-import { type HavingSharedQueuingStrategy } from '../../../../../shared/queue-controller/shared/having-shared-queuing-strategy.js';
+import { type HavingSharedQueuingStrategy } from '../../../../../shared/queue/bridge/shared/having-shared-queuing-strategy.js';
 
-export interface ReadableFlowForkOptions extends HavingSharedQueuingStrategy {
+export interface ReadableFlowForkOptions<GValue = any> extends HavingSharedQueuingStrategy<GValue> {
   readonly disposeHook?: ReadableFlowForkDisposeHook;
 }
 

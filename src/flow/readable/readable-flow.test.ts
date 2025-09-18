@@ -1,6 +1,16 @@
-import { describe } from 'vitest';
+import { sleep } from '@xstd/abortable';
+import { NONE } from '@xstd/none';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { CountPushToAsyncPullQueueFactory } from '../../shared/queue/bridge/push-to-async-pull-queue/built-in/count-push-to-pull-queue-factory/count-push-to-async-pull-queue-factory.js';
+import { ReadableFlow } from './readable-flow.js';
 
 describe('ReadableFlow', () => {
+  let controller: AbortController;
+
+  beforeEach((): void => {
+    controller = new AbortController();
+  });
+
   // describe('generic behaviour', () => {
   //   it('should emit values', async () => {
   //     const data = [0, 1, 2];
@@ -45,7 +55,132 @@ describe('ReadableFlow', () => {
   //   });
   // });
 
-  describe.todo('static-methods', () => {});
+  describe('static-methods', () => {
+    describe('when', () => {
+      it('should receive event on the edge', async () => {
+        const emitter = new EventTarget();
 
-  describe.todo('methods', () => {});
+        const reader = ReadableFlow.when(emitter, 'event').open(controller.signal);
+
+        const promise = reader.next();
+
+        // await reader initialization
+        await sleep(0);
+
+        const event = new Event('event');
+        emitter.dispatchEvent(event);
+        emitter.dispatchEvent(new Event('event'));
+
+        await expect(promise).resolves.toEqual({ done: false, value: event });
+      });
+
+      it('should cache last event', async () => {
+        const emitter = new EventTarget();
+
+        const reader = ReadableFlow.when(emitter, 'event').open(controller.signal, {
+          queuingStrategy: CountPushToAsyncPullQueueFactory.one(),
+        });
+
+        const promise = reader.next();
+
+        // await reader initialization
+        await sleep(0);
+
+        const eventA = new Event('event');
+        emitter.dispatchEvent(eventA);
+
+        const eventB = new Event('event');
+        emitter.dispatchEvent(eventB);
+
+        const eventC = new Event('event');
+        emitter.dispatchEvent(eventC);
+
+        await expect(promise).resolves.toEqual({ done: false, value: eventA });
+        await expect(reader.next()).resolves.toEqual({ done: false, value: eventC });
+      });
+    });
+
+    // TODO others
+  });
+
+  describe('methods', () => {
+    describe('map', () => {
+      it('should map values', async () => {
+        expect(
+          await ReadableFlow.fromIterable([0, 1, 2])
+            .map((value) => value * 2)
+            .toArray(controller.signal),
+        ).toEqual([0, 2, 4]);
+      });
+    });
+
+    describe('filter', () => {
+      it('should filter values', async () => {
+        expect(
+          await ReadableFlow.fromIterable([0, 1, 2])
+            .filter((value) => value > 0)
+            .toArray(controller.signal),
+        ).toEqual([1, 2]);
+      });
+    });
+
+    describe('mapFilter', () => {
+      it('should map and filter values', async () => {
+        expect(
+          await ReadableFlow.fromIterable([0, 1, 2])
+            .mapFilter((value) => (value > 0 ? value * 2 : NONE))
+            .toArray(controller.signal),
+        ).toEqual([2, 4]);
+      });
+    });
+
+    // describe.todo('fork', () => {
+    //   it.todo('should works', async () => {});
+    // });
+
+    describe('toArray', () => {
+      it('should returns the expected value', async () => {
+        expect(await ReadableFlow.fromIterable([0, 1, 2]).toArray(controller.signal)).toEqual([
+          0, 1, 2,
+        ]);
+      });
+    });
+
+    describe('first', () => {
+      it('should return the first value', async () => {
+        let disposed: boolean = false;
+
+        const flow = new ReadableFlow<number>(async function* (): AsyncGenerator<
+          number,
+          void,
+          void
+        > {
+          try {
+            yield 1;
+            expect.unreachable();
+          } finally {
+            disposed = true;
+          }
+        });
+
+        expect(await flow.first(controller.signal)).toBe(1);
+        expect(disposed).toBe(true);
+      });
+
+      it('should throw when there is no value', async () => {
+        let disposed: boolean = false;
+
+        const flow = new ReadableFlow<number>(async function* (): AsyncGenerator<
+          number,
+          void,
+          void
+        > {
+          disposed = true;
+        });
+
+        await expect(flow.first(controller.signal)).rejects.toThrow();
+        expect(disposed).toBe(true);
+      });
+    });
+  });
 });
