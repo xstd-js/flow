@@ -1,7 +1,6 @@
 import { sleep } from '@xstd/abortable';
 import { NONE } from '@xstd/none';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { CountPushToAsyncPullQueueFactory } from '../../shared/queue/bridge/push-to-async-pull-queue/built-in/count-push-to-pull-queue-factory/count-push-to-async-pull-queue-factory.js';
 import { ReadableFlow } from './readable-flow.js';
 
 describe('ReadableFlow', () => {
@@ -78,7 +77,7 @@ describe('ReadableFlow', () => {
         const emitter = new EventTarget();
 
         const reader = ReadableFlow.when(emitter, 'event').open(controller.signal, {
-          queuingStrategy: CountPushToAsyncPullQueueFactory.one(),
+          retentionTime: 100,
         });
 
         const promise = reader.next();
@@ -91,6 +90,8 @@ describe('ReadableFlow', () => {
 
         const eventB = new Event('event');
         emitter.dispatchEvent(eventB);
+
+        await sleep(200);
 
         const eventC = new Event('event');
         emitter.dispatchEvent(eventC);

@@ -10,16 +10,14 @@ import { Drain } from '../../drain/drain.js';
 
 import { getAsyncEnumeratorNextValue } from '../../enumerable/enumerable.js';
 import { ReadableFlow } from '../../flow/readable/readable-flow.js';
-import { type ReadableFlowForkOptions } from '../../flow/readable/types/methods/fork/readable-flow-fork-options.js';
 import { type ReadableFlowContext } from '../../flow/readable/types/readable-flow-context.js';
 import { type ReadableFlowIterator } from '../../flow/readable/types/readable-flow-iterator.js';
-import { CountSharedQueue } from '../../shared/queue-controller/shared/built-in/count-shared-queue.js';
-import { CountPushToAsyncPullQueueFactory } from '../../shared/queue/bridge/push-to-async-pull-queue/built-in/count-push-to-pull-queue-factory/count-push-to-async-pull-queue-factory.js';
-import { type HavingQueuingStrategy } from '../../shared/queue/bridge/push-to-async-pull-queue/having-queuing-strategy.js';
-import { listenTypedEventEmitter } from './functions.private/listen-typed-event-emitter.js';
+import { type PushBridge } from '../../flow/readable/types/static-methods/from-push-source/push-bridge.js';
+import { type PushToPullOptions } from '../../shared/queue/bridge/push-to-async-pull-queue/push-to-pull-options/push-to-pull-options.js';
+import { addTypedEventEmitterListener } from './functions.private/listen-typed-event-emitter.js';
 import { MqttTopic } from './topic/mqtt-topic.js';
 
-export interface MqttOptions extends Omit<ReadableFlowForkOptions, 'queuingStrategy'> {
+export interface MqttOptions {
   readonly clientId?: string;
   readonly username?: string;
   readonly password?: string;
@@ -46,19 +44,13 @@ export interface MqttSubscriptionOptions {
 }
 
 export class MqttFlow {
-  readonly #forkOptions: Omit<ReadableFlowForkOptions, 'queuingStrategy'>;
-
   readonly #sharedMqttClientFlow: ReadableFlow<MqttClient>;
 
   readonly #up: Drain<MqttUpPacket>;
   readonly #subscriptions: Map<string /* key */, ReadableFlow<MqttClient>>;
   readonly #activeSubscriptions: Set<string /* topic */>;
 
-  constructor(url: string | URL, { disposeHook, ...mqttOptions }: MqttOptions = {}) {
-    this.#forkOptions = {
-      disposeHook,
-    };
-
+  constructor(url: string | URL, mqttOptions?: MqttOptions) {
     this.#sharedMqttClientFlow = new ReadableFlow<MqttClient>(async function* ({
       signal,
     }: ReadableFlowContext): ReadableFlowIterator<MqttClient> {
@@ -84,11 +76,13 @@ export class MqttFlow {
       client.setMaxListeners(20);
       // client.setMaxListeners(50);
 
-      yield client;
-    }).fork({
-      ...this.#forkOptions,
-      queuingStrategy: CountSharedQueue.one,
-    });
+      while (client.connected) {
+        yield client;
+        signal.throwIfAborted();
+      }
+
+      throw new Error('MqttClient closed.');
+    }).fork();
 
     this.#up = new Drain<MqttUpPacket>(
       async (flow: ReadableFlow<MqttUpPacket>, signal: AbortSignal): Promise<void> => {
@@ -124,7 +118,7 @@ export class MqttFlow {
       retainAsPublished = false,
       retainHandling = 0,
     }: MqttSubscriptionOptions = {},
-  ): ReadableFlow<MqttDownPacket, [options?: HavingQueuingStrategy<MqttDownPacket>]> {
+  ): ReadableFlow<MqttDownPacket, [options?: PushToPullOptions]> {
     const key: string = JSON.stringify([topic, qos, noLocal, retainAsPublished, retainHandling]);
 
     let subscription: ReadableFlow<MqttClient> | undefined = this.#subscriptions.get(key);
@@ -180,94 +174,77 @@ export class MqttFlow {
           }
         }
 
-        yield client;
-      }).fork({
-        ...this.#forkOptions,
-        queuingStrategy: CountSharedQueue.one,
-      });
+        while (client.connected) {
+          yield client;
+          signal.throwIfAborted();
+        }
+
+        throw new Error('MqttClient closed.');
+      }).fork();
 
       this.#subscriptions.set(key, subscription);
     }
 
-    return new ReadableFlow<MqttDownPacket, [options?: HavingQueuingStrategy<MqttDownPacket>]>(
-      async function* (
-        { signal }: ReadableFlowContext,
-        {
-          queuingStrategy = CountPushToAsyncPullQueueFactory.zero<MqttDownPacket>(),
-        }: HavingQueuingStrategy<MqttDownPacket> = {},
-      ): ReadableFlowIterator<MqttDownPacket> {
-        signal.throwIfAborted();
-
-        await using stack: AsyncDisposableStack = new AsyncDisposableStack();
-
-        // GET CLIENT AND SUBSCRIBE
-
-        const client: MqttClient = await getAsyncEnumeratorNextValue(
-          stack.use(subscription.open(signal)),
-        );
-
+    return subscription.flatMap(
+      (client: MqttClient): ReadableFlow<MqttDownPacket, [options?: PushToPullOptions]> => {
         if (!client.connected) {
           throw new Error('MqttClient closed.');
         }
 
-        // BRIDGE
+        return ReadableFlow.fromPushSource<MqttDownPacket>(
+          ({ next, error, complete, signal }: PushBridge<MqttDownPacket>): void => {
+            // ON ERROR
+            addTypedEventEmitterListener<MqttClientEventCallbacks, 'error'>(
+              client,
+              'error',
+              (_error: unknown): void => {
+                error(_error);
+              },
+              signal,
+            );
 
-        const { push, pull } = queuingStrategy.create(signal);
+            // ON DISCONNECT
+            addTypedEventEmitterListener<MqttClientEventCallbacks, 'disconnect'>(
+              client,
+              'disconnect',
+              (packet: IDisconnectPacket): void => {
+                if (packet.reasonCode === undefined || packet.reasonCode === 0x00) {
+                  complete();
+                } else {
+                  error(new Error('Disconnected', { cause: packet }));
+                }
+              },
+              signal,
+            );
 
-        // ON ERROR
-        stack.use(
-          listenTypedEventEmitter<MqttClientEventCallbacks, 'error'>(
-            client,
-            'error',
-            (error: unknown): void => {
-              push.error(error);
-            },
-          ),
+            // ON END
+            addTypedEventEmitterListener<MqttClientEventCallbacks, 'end'>(
+              client,
+              'end',
+              (): void => {
+                error(new Error('Client ended'));
+              },
+              signal,
+            );
+
+            // ON MESSAGE
+            const topicMatcher: MqttTopic = new MqttTopic(topic);
+
+            addTypedEventEmitterListener<MqttClientEventCallbacks, 'message'>(
+              client,
+              'message',
+              (topic: string, payload: Buffer, _packet: IPublishPacket): void => {
+                if (topicMatcher.matches(topic)) {
+                  next({
+                    topic,
+                    payload,
+                  });
+                }
+              },
+              signal,
+            );
+          },
         );
-
-        // ON DISCONNECT
-        stack.use(
-          listenTypedEventEmitter<MqttClientEventCallbacks, 'disconnect'>(
-            client,
-            'disconnect',
-            (packet: IDisconnectPacket): void => {
-              if (packet.reasonCode === undefined || packet.reasonCode === 0x00) {
-                push.complete();
-              } else {
-                push.error(new Error('Disconnected', { cause: packet }));
-              }
-            },
-          ),
-        );
-
-        // ON END
-        stack.use(
-          listenTypedEventEmitter<MqttClientEventCallbacks, 'end'>(client, 'end', (): void => {
-            push.error(new Error('Client ended'));
-          }),
-        );
-
-        // ON MESSAGE
-        const topicMatcher: MqttTopic = new MqttTopic(topic);
-
-        stack.use(
-          listenTypedEventEmitter<MqttClientEventCallbacks, 'message'>(
-            client,
-            'message',
-            (topic: string, payload: Buffer, _packet: IPublishPacket): void => {
-              if (topicMatcher.matches(topic)) {
-                push.next({
-                  topic,
-                  payload,
-                });
-              }
-            },
-          ),
-        );
-
-        // DELEGATE TO THE BRIDGE
-
-        yield* pull;
       },
     );
   }

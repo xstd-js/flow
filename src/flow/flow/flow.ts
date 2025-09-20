@@ -191,7 +191,6 @@ export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[]> {
         }
       });
     };
-    // }
 
     const enumerator: AsyncEnumeratorObject<GIn, GOut, GReturn> = {
       next: (value: GIn): Promise<EnumeratorResult<GOut, GReturn>> => {
