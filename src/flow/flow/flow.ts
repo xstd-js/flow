@@ -1,12 +1,9 @@
-import { isAsyncGeneratorFunction } from '@xstd/async-generator';
 import { listen } from '@xstd/disposable';
+import { isResultOk, tryAsyncFnc, type Result } from '@xstd/enum';
+import { type AsyncEnumeratorObject, type EnumeratorResult } from '@xstd/enumerable';
 import { NONE } from '@xstd/none';
-import { type AsyncEnumeratorObject, type EnumeratorResult } from '../../enumerable/enumerable.js';
-import { tryAsyncFnc } from '../../shared/enum.private/result/functions/try-async-fnc.js';
-import { isResultOk } from '../../shared/enum.private/result/ok/is-result-ok.js';
-import { type Result } from '../../shared/enum.private/result/result.js';
 
-/*---*/
+/* INIT TYPES */
 
 export interface FlowFactory<GIn, GOut, GReturn, GArguments extends readonly unknown[]> {
   (ctx: FlowContext<GIn, GReturn>, ...args: GArguments): AsyncGenerator<GOut, GReturn, void>;
@@ -26,11 +23,16 @@ export interface FlowContextReturn<GReturn> {
   (): GReturn;
 }
 
-/*---*/
+/* CLASS */
 
+/**
+ * A flow is a wrapper around an `AsyncGenerator` factory.
+ *
+ * When _opening_ a Flow, the provided _factory_ is called with a `FlowContext` and returns a new `AsyncGenerator`.
+ * The `FlowContext` exposes functions to read the values sent through `iterator.next(value)` and `iterator.return(value)`.
+ * Moreover, it receives an `AbortSignal` that must be used to abort a pending iteration of the flow.
+ */
 export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[]> {
-  static debugMode: boolean = true;
-
   // static concat<GIn, GOut>(...flows: Flow<GIn, GOut, void>[]): Flow<GIn, GOut, void> {
   //   return new Flow<GIn, GOut, void>(async function* (
   //     ctx: FlowContext<GIn, void>,
@@ -44,13 +46,22 @@ export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[]> {
   readonly #factory: FlowFactory<GIn, GOut, GReturn, GArguments>;
 
   constructor(factory: FlowFactory<GIn, GOut, GReturn, GArguments>) {
-    if (!isAsyncGeneratorFunction(factory)) {
-      throw new TypeError('The factory must be an AsyncGenerator function.');
-    }
+    // if (!isAsyncGeneratorFunction(factory)) {
+    //   throw new TypeError('The factory must be an AsyncGenerator function.');
+    // }
 
     this.#factory = factory;
   }
 
+  /**
+   * Opens this Flow: it calls the provided `factory` function with a corresponding `FlowContext`.
+   *
+   * The provided _signal_ is used to abort the current pending iteration.
+   *
+   * @param {AbortSignal} signal - The `AbortSignal` that must be used to abort the current pending iteration.
+   * @param args - The arguments to pass to the factory function.
+   * @returns {AsyncEnumeratorObject} An `AsyncEnumeratorObject` that will be used to iterate over the flow.
+   */
   open(signal: AbortSignal, ...args: GArguments): AsyncEnumeratorObject<GIn, GOut, GReturn> {
     let nextValue: GIn;
     let hasNextValue: boolean = false;
@@ -78,21 +89,20 @@ export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[]> {
     );
 
     let queue: Promise<any> = Promise.resolve();
+    let queuedIterations: number = 0;
 
     const enqueue = (
       task: () => Promise<EnumeratorResult<GOut, GReturn>>,
     ): Promise<EnumeratorResult<GOut, GReturn>> => {
-      return (queue = queue.then(task, task));
+      queuedIterations++;
+      // NOTE: we use `queuedIterations` to immediately call the task if there's no pending iteration.
+      return (queue = (queuedIterations === 1 ? Promise.try(task) : queue.then(task, task)).finally(
+        (): void => {
+          queuedIterations--;
+        },
+      ));
     };
 
-    let iterate: (
-      task: () => Promise<EnumeratorResult<GOut, GReturn>>,
-      isTerminal: boolean,
-    ) => Promise<EnumeratorResult<GOut, GReturn>>;
-
-    // if (signal === undefined) {
-    //   iterate = enqueue;
-    // } else {
     let signalAbortEventListener: Disposable | undefined;
 
     const endSignalAbortEventListener = (): void => {
@@ -131,7 +141,7 @@ export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[]> {
      *  - if the iterator is done, do nothing (everything is already complete)
      *  - else, we start a 100ms timer, while we expect the user to call one of the iteration methods (`next`, `return` or `throw`), to complete the flow.
      */
-    iterate = (
+    const iterate = (
       task: () => Promise<EnumeratorResult<GOut, GReturn>>,
       isTerminal: boolean,
     ): Promise<EnumeratorResult<GOut, GReturn>> => {
@@ -152,11 +162,9 @@ export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[]> {
             if (signal.aborted) {
               // => if the signal is aborted, then the iterator should have rejected
 
-              if (Flow.debugMode) {
-                console.warn(
-                  'The `AsyncIterator` returned an `IteratorResult` with `{ done: false }` while the `signal` of this flow is aborted. If this signal is aborted, the `AsyncIterator` is expected to either reject with `signal.reason` or resolve with an `IteratorResult` => `{ done: true }`.',
-                );
-              }
+              console.warn(
+                'The `AsyncIterator` returned an `IteratorResult` with `{ done: false }` while the `signal` of this flow is aborted. If this signal is aborted, the `AsyncIterator` is expected to either reject with `signal.reason` or resolve with an `IteratorResult` => `{ done: true }`.',
+              );
             } else {
               // => if the signal is aborted while the flow is not running, we must ensure that the user ends the flow by calling one of its methods: `next`, `throw` or `return`.
 
@@ -179,19 +187,16 @@ export class Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[]> {
           if (!isTerminal && signal.aborted && error !== signal.reason) {
             // => if the signal is aborted, then the iterator must reject with the signal's reason, except if it's a "terminal" operation.
 
-            if (Flow.debugMode) {
-              console.warn(
-                'The `AsyncIterator` threw an error while the signal of this flow was aborted. This error is expected to be `signal.reason`. Got:',
-              );
-              console.error(error);
-            }
+            console.warn(
+              'The `AsyncIterator` threw an error while the signal of this flow was aborted. This error is expected to be `signal.reason`. Got:',
+            );
+            console.error(error);
           }
 
           throw error;
         }
       });
     };
-    // }
 
     const enumerator: AsyncEnumeratorObject<GIn, GOut, GReturn> = {
       next: (value: GIn): Promise<EnumeratorResult<GOut, GReturn>> => {

@@ -10,15 +10,13 @@
   <img height="64" alt="Shows a black logo in light color mode and a white one in dark color mode." src="https://github.com/xstd-js/website/blob/main/assets/logo/png/logo-large-light.png?raw=true">
 </picture>
 
-**WORK IN PROGRESS**
-
 ## @xstd/flow
 
-`Flow` is all about **reimagining the stream interface**.
+`Flow` empowers `AsyncGenerator`s to provide a **great streaming experience**.
 
-The goal is to identify what matters most in designing a robust stream interface, and to provide implementations that fulfill these requirements.
+The goal is to identify what matters most to design a robust stream implementation while keeping the API as simple as possible.
 
-To understand this necessity, please refer to the [MANIFEST](MANIFEST.md).
+To understand this necessity, please refer to the [MANIFEST](./MANIFEST.md).
 
 ### Examples:
 
@@ -27,22 +25,29 @@ To understand this necessity, please refer to the [MANIFEST](MANIFEST.md).
 Flow is great for automation:
 
 ```ts
-async function automation() {
-    await using temperatureReader: AsyncReader<number> = await temperatureDevice.open();
-    await using airConditioningOnOffWriter: AsyncWriter<boolean> = await airConditioningDevice.open();
-
-  while (true) {
-    // if temperature > 28°C, turn on AC
-    await airConditioningOnOffWriter.next((await temperatureReader.next()) > 28.0);
-  }
+async function automation(signal: AbortSignal) {
+  // Let's assume we have:
+  const temperatureObserver: ReadableFlow<number> = /*...*/; // emits the temperature of a device
+  const airCoolingOnOffWriter: Drain<boolean> = /*...*/; // turns on/off an air cooling device
+  
+  
+  // Then we can link them like this:
+  
+  // 3) the airCoolingOnOffWriter consumes the created flow and turns on/off the air cooling device acoording to the received temperature values
+  await airCoolingOnOffWriter.drain(
+    temperatureObserver
+      // 1) for each temperature values sent by the temperatureObserver, we return true isf it exceeds 28 degrees
+      .map((temperature: number) => temperature > 28.0)
+      // 2) we emit only disctinct values, to prevent the air cooling device to be spammed with identical commands
+      .distinct(),
+    signal,
+  );
 }
 ```
 
 #### Drag event
 
 ```ts
-import { AsyncReadable } from '@xstd/flow';
-
 interface Drag {
   readonly originX: number;
   readonly originY: number;
@@ -52,37 +57,35 @@ interface Drag {
   readonly deltaY: number;
 }
 
-async function example() {
-  const readable = AsyncReadable.when<PointerEvent>(window, 'pointerdown')
-    .flatMap((event: PointerEvent): AsyncReadable<Drag> => {
+async function main(signal: AbortSignal) {
+  const readable = ReadableFlow.when<PointerEvent>(window, 'pointerdown')
+    .flatMap((event: PointerEvent): ReadableFlow<Drag> => {
       const originX: number = event.clientX;
       const originY: number = event.clientY;
 
-      return AsyncReadable.when<PointerEvent>(window, 'pointermove')
-        .takeUntil(AsyncReadable.when(window, 'pointerup'))
-        .map((event: PointerEvent): Drag => {
-          const currentX: number = event.clientX;
-          const currentY: number = event.clientY;
+      return (
+        ReadableFlow.when<PointerEvent>(window, 'pointermove')
+          .takeUntil(ReadableFlow.when(window, 'pointerup'))
+          .map((event: PointerEvent): Drag => {
+            const currentX: number = event.clientX;
+            const currentY: number = event.clientY;
 
-          return {
-            originX,
-            originY,
-            currentX,
-            currentY,
-            deltaX: currentX - originX,
-            deltaY: currentY - originY,
-          };
-        });
+            return {
+              originX,
+              originY,
+              currentX,
+              currentY,
+              deltaX: currentX - originX,
+              deltaY: currentY - originY,
+            };
+          })
+      );
     });
-
-  await using reader: AsyncReader<Drag> = await readable.open();
   
-  while (true) {
-    console.log('drag', await reader.next());
+  for await (const value of readable.open(signal)) {
+    console.log('drag', value);
   }
 }
-
-example();
 ```
 
 ## 📦 Installation

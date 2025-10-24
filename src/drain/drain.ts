@@ -3,6 +3,7 @@ import { type ReadableFlow } from '../flow/readable/readable-flow.js';
 
 export interface DrainFlow<
   GValue,
+  GReturn = void,
   GFlowArguments extends readonly unknown[] = [],
   GDrainArguments extends readonly unknown[] = GFlowArguments,
 > {
@@ -10,17 +11,18 @@ export interface DrainFlow<
     flow: ReadableFlow<GValue, GFlowArguments>,
     signal: AbortSignal,
     ...args: GDrainArguments
-  ): PromiseLike<void> | void;
+  ): PromiseLike<GReturn> | GReturn;
 }
 
 export class Drain<
   GValue,
+  GReturn = void,
   GFlowArguments extends readonly unknown[] = [],
   GDrainArguments extends readonly unknown[] = [],
 > {
-  readonly #drain: DrainFlow<GValue, GFlowArguments, GDrainArguments>;
+  readonly #drain: DrainFlow<GValue, GReturn, GFlowArguments, GDrainArguments>;
 
-  constructor(drain: DrainFlow<GValue, GFlowArguments, GDrainArguments>) {
+  constructor(drain: DrainFlow<GValue, GReturn, GFlowArguments, GDrainArguments>) {
     this.#drain = drain;
   }
 
@@ -28,8 +30,8 @@ export class Drain<
     flow: ReadableFlow<GValue, GFlowArguments>,
     signal: AbortSignal,
     ...args: GDrainArguments
-  ): Promise<void> {
-    await this.#drain(flow, signal, ...args);
+  ): Promise<GReturn> {
+    return this.#drain(flow, signal, ...args);
   }
 
   /* TRANSFORM */
