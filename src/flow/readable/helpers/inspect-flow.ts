@@ -1,8 +1,9 @@
-import { type FlowInspectOptions } from '../types/methods/inspect/flow-inspect-options.js';
+import { type ReadableFlowInspectOptions } from '../types/methods/inspect/readable-flow-inspect-options.js';
 
 const COLOR_SCHEME =
-  typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
-    ? {
+  typeof window !== 'undefined' &&
+  /* istanbul ignore next */ window.matchMedia('(prefers-color-scheme: dark)').matches
+    ? /* istanbul ignore next */ {
         light: '75%',
         open: '#35e062',
         next: '#70bcff',
@@ -20,7 +21,7 @@ const COLOR_SCHEME =
 export function inspectFlow<GValue, GArguments extends readonly unknown[]>(
   name: string,
   color: string = `hsl(${Math.floor(Math.random() * 360).toString(10)}deg, 100%, ${COLOR_SCHEME.light})`,
-): FlowInspectOptions<GValue, GArguments> {
+): ReadableFlowInspectOptions<GValue, GArguments> {
   return {
     open: (...args: GArguments): void => {
       console.log(`%c[OPEN]%c ${name}`, `color: ${COLOR_SCHEME.open}`, `color: ${color}`, ...args);

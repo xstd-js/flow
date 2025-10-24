@@ -3,7 +3,7 @@ export interface PushBridge<GValue> {
   readonly error: PushBridgeErrorFunction;
   readonly complete: PushBridgeCompleteFunction;
   readonly signal: AbortSignal;
-  // readonly stack: AsyncDisposableStack; // TODO consider
+  readonly stack: AsyncDisposableStack;
 }
 
 export interface PushBridgeNextFunction<GValue> {

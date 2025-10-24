@@ -1,3 +1,3 @@
 export interface PushToPullOptions {
-  readonly retentionTime?: number;
+  readonly dataRetentionTime?: number;
 }

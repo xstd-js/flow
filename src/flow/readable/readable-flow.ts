@@ -10,30 +10,48 @@ import {
 import { type None, NONE } from '@xstd/none';
 import { Flow } from '../flow/flow.js';
 import { type FlowReader } from './types/flow-reader.js';
+import { type ReadableFlowCatchFunction } from './types/methods/catch/readable-flow-catch-function.js';
 import { type ReadableFlowDistinctOptions } from './types/methods/distinct/readable-flow-distinct-options.js';
-import { type FlowFlatMapFunction } from './types/methods/flat-map/flow-flat-map-function.js';
-import { type FlowInspectOptions } from './types/methods/inspect/flow-inspect-options.js';
+import { type ReadableFlowFinallyFunction } from './types/methods/finally/readable-flow-finally-function.js';
+import { type ReadableFlowFlatMapFunction } from './types/methods/flat-map/readable-flow-flat-map-function.js';
+import { ReadableFlowForEachFunction } from './types/methods/for-each/readable-flow-for-each-function.js';
+import { type ReadableFlowForkOptions } from './types/methods/fork/readable-flow-fork-options.js';
+import { type ReadableFlowInspectOptions } from './types/methods/inspect/readable-flow-inspect-options.js';
 import { type ReadableFlowContext } from './types/readable-flow-context.js';
 import { type ReadableFlowIterator } from './types/readable-flow-iterator.js';
-import { InitPushSource } from './types/static-methods/from-push-source/init-push-source.js';
+import { type ReadableFlowFromPromiseFactoryFunction } from './types/static-methods/from-promise-factory/readable-flow-from-promise-factory-function.js';
+import { type InitPushSource } from './types/static-methods/from-push-source/init-push-source.js';
 import { type PushBridge } from './types/static-methods/from-push-source/push-bridge.js';
 import { type PushToPullOptions } from './types/static-methods/from-push-source/push-to-pull-options.js';
 import { type QueueStep } from './types/static-methods/from-push-source/queue-step.js';
 
-/*------*/
-
+/**
+ * Represents a readable flow of values that can be consumed asynchronously.
+ *
+ * @template GValue The type of values emitted by the flow.
+ * @template GArguments Additional arguments to pass to the flow.
+ * @extends {Flow<void, GValue, void, GArguments>}
+ */
 export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> extends Flow<
   void,
   GValue,
   void,
   GArguments
 > {
+  /* PUSH TO PULL */
+
+  /**
+   * Creates a `ReadableFlow` from a push-based data source.
+   *
+   * @param {InitPushSource<GValue>} init - A function to initialize the push-based data source. The function receives a controller object that includes methods for pushing the next value, signaling an error, or completing the stream, as well as an `AbortSignal` for handling cancellations.
+   * @return {ReadableFlow<GValue, [options?: PushToPullOptions]>} A `ReadableFlow` that converts the push-based data source into a pull-based stream.
+   */
   static fromPushSource<GValue>(
     init: InitPushSource<GValue>,
   ): ReadableFlow<GValue, [options?: PushToPullOptions]> {
     return new ReadableFlow<GValue, [options?: PushToPullOptions]>(async function* (
       { signal }: ReadableFlowContext,
-      { retentionTime = 0 }: PushToPullOptions = {},
+      { dataRetentionTime = 0 }: PushToPullOptions = {},
     ): ReadableFlowIterator<GValue> {
       signal.throwIfAborted();
 
@@ -41,7 +59,7 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
       let push: (step: QueueStep<GValue>) => void;
       let pull: (signal: AbortSignal) => Promise<QueueStep<GValue>>;
 
-      if (retentionTime <= 0) {
+      if (dataRetentionTime <= 0) {
         let queueStepPromise: PromiseWithResolvers<QueueStep<GValue>> | undefined;
 
         push = (step: QueueStep<GValue>): void => {
@@ -52,9 +70,10 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
         };
 
         pull = async (signal: AbortSignal): Promise<QueueStep<GValue>> => {
-          if (queueStepPromise === undefined) {
-            queueStepPromise = Promise.withResolvers<QueueStep<GValue>>();
-          }
+          // NOTE: never happens, because `pull`s are not concurrent
+          // if (queueStepPromise === undefined) {
+          queueStepPromise = Promise.withResolvers<QueueStep<GValue>>();
+          // }
 
           return await abortify(queueStepPromise.promise, {
             signal,
@@ -70,11 +89,20 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
 
         let queueStepPromise: PromiseWithResolvers<void> | undefined;
 
+        const removeExpiredEntries = (): void => {
+          const now: number = Date.now();
+          while (queue.length > 0 && queue[0].expirationDate < now) {
+            queue.shift();
+          }
+        };
+
         push = (step: QueueStep<GValue>): void => {
           queue.push({
             step,
-            expirationDate: Date.now() + retentionTime,
+            expirationDate: Date.now() + dataRetentionTime,
           });
+
+          removeExpiredEntries();
 
           if (queueStepPromise !== undefined) {
             queueStepPromise.resolve();
@@ -84,15 +112,13 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
 
         pull = async (signal: AbortSignal): Promise<QueueStep<GValue>> => {
           while (true) {
-            const now: number = Date.now();
-            while (queue.length > 0 && queue[0].expirationDate < now) {
-              queue.shift();
-            }
+            removeExpiredEntries();
 
             if (queue.length === 0) {
-              if (queueStepPromise === undefined) {
-                queueStepPromise = Promise.withResolvers<void>();
-              }
+              // NOTE: never happens, because `pull`s are not concurrent
+              // if (queueStepPromise === undefined) {
+              queueStepPromise = Promise.withResolvers<void>();
+              // }
 
               await abortify(queueStepPromise.promise, {
                 signal,
@@ -138,7 +164,9 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
         }
       };
 
-      init({
+      await using stack: AsyncDisposableStack = new AsyncDisposableStack();
+
+      const result: PromiseLike<void> | void = init({
         next: (value: GValue): void => {
           pushBridgeStep({
             type: 'next',
@@ -157,7 +185,13 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
           });
         },
         signal: bridgeSignal,
+        stack,
       });
+
+      // NOTE: ensures that `pull` is called synchronously if `init` is synchronous
+      if (result !== undefined) {
+        await result;
+      }
 
       // 3) iterate
       while (true) {
@@ -174,6 +208,13 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
     });
   }
 
+  /**
+   * Creates a `ReadableFlow` that listens to a specified event type on a given `EventTarget`.
+   *
+   * @param {EventTarget} target - The target object to listen for events on.
+   * @param {string} type - The type of event to listen for.
+   * @return {ReadableFlow<GEvent, [options?: PushToPullOptions]>} A readable flow that emits events of the specified type.
+   */
   static when<GEvent extends Event>(
     target: EventTarget,
     type: string,
@@ -182,6 +223,27 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
       target.addEventListener(type, next as EventListener, {
         signal,
       });
+    });
+  }
+
+  /* FROM MANY */
+
+  /**
+   * Combines multiple readable flows into a single flow, concatenating their outputs.
+   *
+   * @param {ReadableFlow<GValue, GArguments>[]} flows - An array of readable flows to be concatenated.
+   * @return {ReadableFlow<GValue, GArguments>} A single concatenated readable flow combining all inputs.
+   */
+  static concat<GValue, GArguments extends readonly unknown[]>(
+    ...flows: ReadableFlow<GValue, GArguments>[]
+  ): ReadableFlow<GValue, GArguments> {
+    return new ReadableFlow<GValue, GArguments>(async function* (
+      ctx: ReadableFlowContext,
+      ...args: GArguments
+    ): ReadableFlowIterator<GValue> {
+      for (let i: number = 0; i < flows.length; i++) {
+        yield* flows[i].use(ctx, ...args);
+      }
     });
   }
 
@@ -198,28 +260,58 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
   //   });
   // }
 
-  static concat<GValue, GArguments extends readonly unknown[]>(
-    ...flows: ReadableFlow<GValue, GArguments>[]
-  ): ReadableFlow<GValue, GArguments> {
-    return new ReadableFlow<GValue, GArguments>(async function* (
-      ctx: ReadableFlowContext,
-      ...args: GArguments
-    ): ReadableFlowIterator<GValue> {
-      for (let i: number = 0; i < flows.length; i++) {
-        yield* flows[i].use(ctx, ...args);
-      }
-    });
-  }
+  // TODO
+  // static combine<
+  //   GFlows extends readonly ReadableFlow<unknown, GArguments>[],
+  //   GArguments extends readonly unknown[],
+  // >(flows: GFlows): ReadableFlow<any, GArguments> {
+  //   type GValue = any;
+  //
+  //   return new ReadableFlow<GValue, GArguments>(async function* (
+  //     ctx: ReadableFlowContext,
+  //     ...args: GArguments
+  //   ): ReadableFlowIterator<GValue> {
+  //     const iterators: AsyncEnumeratorObject<void, void, void>[] = flows.map(
+  //       (flow: ReadableFlow<unknown, GArguments>): AsyncEnumeratorObject<void, unknown, void> => {
+  //         return flow.use(ctx, ...args);
+  //       },
+  //     );
+  //
+  //     const pending: Promise<EnumeratorResult<unknown, void>>[] = iterators.map(() => {
+  //
+  //     });
+  //
+  //     await Promise.all(pending);
+  //   });
+  // }
 
+  // static combine<
+  //   GRecord extends Record<string, ReadableFlow<any, GArguments>>,
+  //   GArguments extends readonly unknown[],
+  // >(record: GRecord): ReadableFlow<any, GArguments> {
+  //   type GValue = any;
+  //   return new ReadableFlow<GValue, GArguments>(async function* (
+  //     ctx: ReadableFlowContext,
+  //     ...args: GArguments
+  //   ): ReadableFlowIterator<GValue> {
+  //     let pending: any[] = [];
+  //
+  //     for (const [key, value] of Object.entries(record)) {
+  //       const iterator: AsyncEnumeratorObject<void, void, void> = value.use(ctx, ...args);
+  //     }
+  //   });
+  // }
+
+  /* FROM OTHER TYPES */
+
+  /**
+   * Creates a new ReadableFlow instance from the provided arguments.
+   *
+   * @param {GValue[]} values - The values to be included in the resulting flow.
+   * @return {ReadableFlow<GValue, []>} A new ReadableFlow instance containing the specified values.
+   */
   static of<GValue>(...values: GValue[]): ReadableFlow<GValue, []> {
-    return new ReadableFlow<GValue, []>(async function* ({
-      signal,
-    }: ReadableFlowContext): ReadableFlowIterator<GValue> {
-      for (let i: number = 0; i < values.length; i++) {
-        signal.throwIfAborted();
-        yield values[i];
-      }
-    });
+    return this.fromArray<GValue>(values);
   }
 
   // static from<GValue, GArguments extends readonly unknown[]>(
@@ -244,8 +336,14 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
   //   throw new TypeError('Invalid input.');
   // }
 
+  /**
+   * Creates a new `ReadableFlow` instance using a factory function that returns a promise or a value.
+   *
+   * @param {ReadableFlowFromPromiseFactoryFunction<GValue, GArguments>} factory - A factory function that accepts an `AbortSignal` and additional arguments, returning a promise-like value or a direct value.
+   * @return {ReadableFlow<GValue, GArguments>} A new `ReadableFlow` instance that generates values as resolved by the factory function.
+   */
   static fromPromiseFactory<GValue, GArguments extends readonly unknown[]>(
-    factory: (signal: AbortSignal, ...args: GArguments) => PromiseLike<GValue> | GValue,
+    factory: ReadableFlowFromPromiseFactoryFunction<GValue, GArguments>,
   ): ReadableFlow<GValue, GArguments> {
     return new ReadableFlow<GValue, GArguments>(async function* (
       { signal }: ReadableFlowContext,
@@ -255,7 +353,17 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
     });
   }
 
+  /**
+   * Creates a new ReadableFlow instance from the provided iterable.
+   *
+   * @param {Iterable<GValue>} input - The input iterable to create a ReadableFlow from.
+   * @return {ReadableFlow<GValue, []>} A new ReadableFlow instance that processes the values from the iterable.
+   */
   static fromIterable<GValue>(input: Iterable<GValue>): ReadableFlow<GValue, []> {
+    if (Array.isArray(input)) {
+      return this.fromArray<GValue>(input);
+    }
+
     return new ReadableFlow<GValue, []>(async function* ({
       signal,
     }: ReadableFlowContext): ReadableFlowIterator<GValue> {
@@ -287,6 +395,12 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
     });
   }
 
+  /**
+   * Creates a `ReadableFlow` instance from an `AsyncIterable`.
+   *
+   * @param {AsyncIterable<GValue>} input - The async iterable to convert into a `ReadableFlow`.
+   * @return {ReadableFlow<GValue, []>} A `ReadableFlow` representing the provided `AsyncIterable`.
+   */
   static fromAsyncIterable<GValue>(input: AsyncIterable<GValue>): ReadableFlow<GValue, []> {
     return new ReadableFlow<GValue, []>(async function* ({
       signal,
@@ -319,6 +433,29 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
     });
   }
 
+  /**
+   * Creates a new ReadableFlow instance from an array-like object.
+   *
+   * @param {ArrayLike<GValue>} array - The array-like object to convert into a readable flow.
+   * @return {ReadableFlow<GValue, []>} A readable flow that iterates over the elements of the given array-like object.
+   */
+  static fromArray<GValue>(array: ArrayLike<GValue>): ReadableFlow<GValue, []> {
+    return new ReadableFlow<GValue, []>(async function* ({
+      signal,
+    }: ReadableFlowContext): ReadableFlowIterator<GValue> {
+      for (let i: number = 0; i < array.length; i++) {
+        signal.throwIfAborted();
+        yield array[i];
+      }
+    });
+  }
+
+  /**
+   * Creates a new `ReadableFlow` that always throws an error produced by the provided factory function.
+   *
+   * @param {Function} factory - A function that generates the error to be thrown.
+   * @return {ReadableFlow<GValue, []>} A `ReadableFlow` that throws the error.
+   */
   static thrown<GValue = never>(factory: () => unknown): ReadableFlow<GValue, []> {
     return new ReadableFlow<GValue, []>(async function* ({
       signal,
@@ -347,6 +484,12 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
 
   /* TRANSFORM THE DATA */
 
+  /**
+   * Transforms each value in the flow using the provided mapping function.
+   *
+   * @param {MapFunction<GValue, GNewValue>} mapFnc - A function that takes an input value of type GValue and maps it to a new value of type GNewValue.
+   * @return {ReadableFlow<GNewValue, GArguments>} A new ReadableFlow instance containing the transformed values.
+   */
   map<GNewValue>(mapFnc: MapFunction<GValue, GNewValue>): ReadableFlow<GNewValue, GArguments> {
     const self: ReadableFlow<GValue, GArguments> = this;
     return new ReadableFlow<GNewValue, GArguments>(async function* (
@@ -359,6 +502,12 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
     });
   }
 
+  /**
+   * Filters the values of the flow based on the provided filter function.
+   *
+   * @param {FilterFunction<GValue>} filterFnc - A function that determines whether each value in the flow should be included.
+   * @return {ReadableFlow<GValue, GArguments>} A new flow containing only the values that satisfy the filter function.
+   */
   filter<GNewValue extends GValue>(
     filterFnc: FilterFunctionWithSubType<GValue, GNewValue>,
   ): ReadableFlow<GNewValue, GArguments>;
@@ -377,6 +526,15 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
     });
   }
 
+  /**
+   * Transforms and filters elements of the flow based on the provided function.
+   * For each element, the function is called. If the function returns `NONE`,
+   * the element is filtered out; otherwise, the transformed value is included in the resulting flow.
+   *
+   * @param {MapFilterFunction<GValue, GNewValue>} filterFnc - A function that takes an element of the current flow
+   * and returns either a transformed value or `NONE` to exclude the element.
+   * @return {ReadableFlow<GNewValue, GArguments>} A new readable flow containing transformed and filtered elements.
+   */
   mapFilter<GNewValue>(
     filterFnc: MapFilterFunction<GValue, GNewValue>,
   ): ReadableFlow<GNewValue, GArguments> {
@@ -394,6 +552,15 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
     });
   }
 
+  /**
+   * Produces a new flow of distinct values by comparing each emitted value with the previous one.
+   * Values are considered distinct if they are not equal based on the provided equality function.
+   *
+   * @param {GValue | None} initialValue The initial reference value to compare against. If not provided, no initial comparison is made.
+   * @param {ReadableFlowDistinctOptions<GValue>} options Configuration options for distinguishing values, which includes:
+   * - `equal`: A function used to compare two values for equality. Defaults to strict equality (`===`).
+   * @return {ReadableFlow<GValue, GArguments>} A new readable flow that emits distinct values.
+   */
   distinct(
     initialValue: GValue | None = NONE,
     { equal = EQUAL_FUNCTION_STRICT_EQUAL }: ReadableFlowDistinctOptions<GValue> = {},
@@ -414,6 +581,12 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
 
   /* TRUNCATE THE FLOW */
 
+  /**
+   * Creates a new `ReadableFlow` instance that emits only the first `count` values from the current flow.
+   *
+   * @param {number} count The maximum number of values to take from the flow. Must be greater than or equal to 0.
+   * @return {ReadableFlow<GValue, GArguments>} A new `ReadableFlow` instance emitting up to `count` values.
+   */
   take(count: number): ReadableFlow<GValue, GArguments> {
     const self: ReadableFlow<GValue, GArguments> = this;
 
@@ -438,6 +611,12 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
     });
   }
 
+  /**
+   * Creates a new `ReadableFlow` that emits values from the current flow until the `untilSource` emits a value or completes.
+   *
+   * @param {ReadableFlow<any, []>} untilSource - A readable flow that determines when to stop emitting values. Once this flow emits a value, the returned flow completes.
+   * @return {ReadableFlow<GValue, GArguments>} A new readable flow that terminates when the `untilSource` emits its first value or completes.
+   */
   takeUntil(untilSource: ReadableFlow<any, []>): ReadableFlow<GValue, GArguments> {
     const self: ReadableFlow<GValue, GArguments> = this;
 
@@ -475,6 +654,12 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
     });
   }
 
+  /**
+   * Creates a new flow that skips a specified number of items from the beginning of the current flow.
+   *
+   * @param {number} count - The number of items to skip from the start of the flow.
+   * @return {ReadableFlow<GValue, GArguments>} A new flow that yields all items from the current flow after skipping the specified count.
+   */
   drop(count: number): ReadableFlow<GValue, GArguments> {
     const self: ReadableFlow<GValue, GArguments> = this;
 
@@ -494,8 +679,16 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
 
   /* TRANSFORM THE FLOW */
 
+  /**
+   * Transforms each element of the flow using the provided function and flattens the result into a single flow.
+   *
+   * @param {ReadableFlowFlatMapFunction<GValue, GNewValue>} flatMapFnc - A function that takes an element of the flow
+   * and returns a new flow for the elements to be flattened into the resulting flow.
+   * @return {ReadableFlow<GNewValue, GArguments>} A new `ReadableFlow` instance representing the flattened output flow
+   * after applying the flat-map transformation.
+   */
   flatMap<GNewValue>(
-    flatMapFnc: FlowFlatMapFunction<GValue, GNewValue>,
+    flatMapFnc: ReadableFlowFlatMapFunction<GValue, GNewValue>,
   ): ReadableFlow<GNewValue, GArguments> {
     const self: ReadableFlow<GValue, GArguments> = this;
 
@@ -510,25 +703,16 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
   }
 
   /**
-   * @experimental
+   * Creates a fork of the flow, allowing multiple consumers to independently read from the same source.
+   * On the first consumer, this flow opens and sends its values to this consumer and all the following, and closes when all the consumers terminate.
+   *
+   * The forked flow can optionally maintain its state for a specified duration even after the last consumer ends.
+   *
+   * @param {Object} options - Configuration options for the fork.
+   * @param {number} [options.maintainAlive=0] - The time (in milliseconds) to keep the flow alive after the last consumer disconnects. Default is 0, meaning immediate disposal.
+   * @return {ReadableFlow<GValue, GArguments>} A new readable flow instance that provides a shared stream of values from the original source.
    */
-  // loop(delay: number): ReadableFlow<GValue> {
-  //   const self: ReadableFlow<GValue> = this;
-  //
-  //   return new ReadableFlow<GValue>(async function* (
-  //     ctx: ReadableFlowContext,
-  //   ): ReadableFlowIterator<GValue> {
-  //     while (true) {
-  //       try {
-  //         yield* self.use(ctx);
-  //       } finally {
-  //         await sleep(delay, { signal: ctx.signal });
-  //       }
-  //     }
-  //   });
-  // }
-
-  fork(): ReadableFlow<GValue, GArguments> {
+  fork({ maintainAlive = 0 }: ReadableFlowForkOptions = {}): ReadableFlow<GValue, GArguments> {
     const self: ReadableFlow<GValue, GArguments> = this;
 
     let consumers: number = 0;
@@ -537,12 +721,18 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
     let sharedPromise: Promise<IteratorResult<GValue, void>> | undefined;
 
     let disposePromise: Promise<void> | undefined;
+    let maintainAliveTimer: any | undefined;
 
     return new ReadableFlow<GValue, GArguments>(async function* (
       { signal }: ReadableFlowContext,
       ...args: GArguments
     ): ReadableFlowIterator<GValue> {
       signal.throwIfAborted();
+
+      if (maintainAliveTimer !== undefined) {
+        clearTimeout(maintainAliveTimer);
+        maintainAliveTimer = undefined;
+      }
 
       if (disposePromise !== undefined) {
         await abortify(disposePromise, { signal });
@@ -578,281 +768,58 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
         consumers--;
 
         if (consumers === 0) {
-          readerController!.abort(signal.reason);
-          readerController = undefined;
+          const dispose = async (): Promise<void> => {
+            readerController!.abort(signal.reason);
+            readerController = undefined;
 
-          const { promise, resolve } = Promise.withResolvers<void>();
-          disposePromise = promise;
+            const { promise, resolve } = Promise.withResolvers<void>();
+            disposePromise = promise;
 
-          try {
-            await reader![Symbol.asyncDispose]();
-          } finally {
-            reader = undefined;
-            disposePromise = undefined;
-            resolve();
+            try {
+              await reader![Symbol.asyncDispose]();
+            } finally {
+              reader = undefined;
+              disposePromise = undefined;
+              resolve();
+            }
+          };
+
+          if (maintainAlive <= 0) {
+            await dispose();
+          } else {
+            maintainAliveTimer = setTimeout((): void => {
+              maintainAliveTimer = undefined;
+              dispose().catch(reportError);
+            }, maintainAlive);
           }
         }
       }
     });
   }
 
-  // fork({
-  //   queuingStrategy = EdgePushToSharedAsyncPullQueueFactory.edge<any>(),
-  //   disposeHook,
-  // }: ReadableFlowForkOptions<any> = {}): ReadableFlow<GValue, GArguments> {
-  //   const self: ReadableFlow<GValue, GArguments> = this;
-  //
-  //   type IteratorPromise = Promise<IteratorResult<GValue, void>>;
-  //
-  //   let consumers: number = 0;
-  //   let readerController: AbortController | undefined;
-  //   let reader: FlowReader<GValue> | undefined;
-  //   let sharedQueue: PushToSharedAsyncPullQueue<GValue> | undefined;
-  //   let iteratorStepPromise: IteratorPromise | undefined;
-  //
-  //   let disposeController: AbortController | undefined;
-  //   let disposePromise: Promise<void> | undefined;
-  //
-  //   return new ReadableFlow<GValue, GArguments>(async function* (
-  //     { signal }: ReadableFlowContext,
-  //     ...args: GArguments
-  //   ): ReadableFlowIterator<GValue> {
-  //     signal.throwIfAborted();
-  //
-  //     if (disposeController !== undefined) {
-  //       // abort postponed dispose
-  //       disposeController.abort(new Error('Cancelled.'));
-  //       disposeController = undefined;
-  //       disposePromise = undefined;
-  //     }
-  //
-  //     if (disposePromise !== undefined) {
-  //       await abortify(disposePromise.catch(noop), { signal });
-  //     }
-  //
-  //     consumers++;
-  //
-  //     try {
-  //       if (reader === undefined) {
-  //         readerController = new AbortController();
-  //         reader = self.open(readerController.signal, ...args);
-  //         sharedQueue = queuingStrategy.create(readerController.signal);
-  //       }
-  //
-  //       const localQueue: AsyncPullQueue<GValue> = sharedQueue!.fork();
-  //
-  //       // TODO continue here
-  //
-  //       yield* localQueue;
-  //
-  //       let localIteratorStepPromise: IteratorPromise | undefined;
-  //
-  //       while (true) {
-  //         let cachedIteratorStepPromise: IteratorPromise | None;
-  //         // dequeue the steps of the queue that have already been treated
-  //         while ((cachedIteratorStepPromise = localQueue.pull()) === localIteratorStepPromise);
-  //
-  //         if (cachedIteratorStepPromise === NONE) {
-  //           // └> no step in the queue
-  //           if (iteratorStepPromise === undefined) {
-  //             // └> no shared step
-  //             // => we need to iterate
-  //             iteratorStepPromise = reader.next().finally((): void => {
-  //               iteratorStepPromise = undefined;
-  //             });
-  //             // append the step to the queue
-  //             sharedQueue!.push(iteratorStepPromise);
-  //           }
-  //           localIteratorStepPromise = iteratorStepPromise;
-  //         } else {
-  //           // => use the cached step
-  //           localIteratorStepPromise = cachedIteratorStepPromise;
-  //         }
-  //
-  //         const result: IteratorResult<GValue, void> = await abortify(localIteratorStepPromise, {
-  //           signal,
-  //         });
-  //
-  //         if (result.done) {
-  //           return result.value;
-  //         } else {
-  //           yield result.value;
-  //           // NOTE: we do not propagate any `.throw` directly to the reader, similar to `.return`.
-  //         }
-  //       }
-  //     } finally {
-  //       consumers--;
-  //
-  //       if (consumers === 0) {
-  //         const dispose = async (): Promise<void> => {
-  //           readerController!.abort(signal.reason);
-  //           readerController = undefined;
-  //
-  //           try {
-  //             return await reader![Symbol.asyncDispose]();
-  //           } finally {
-  //             reader = undefined;
-  //             sharedQueue = undefined;
-  //             disposeController = undefined;
-  //             disposePromise = undefined;
-  //           }
-  //         };
-  //
-  //         if (disposeHook === undefined) {
-  //           await (disposePromise = dispose());
-  //         } else {
-  //           const controller: AbortController = new AbortController();
-  //           const { promise, resolve, reject } = Promise.withResolvers<any>();
-  //           disposeController = controller;
-  //           disposePromise = promise;
-  //
-  //           disposeHook(controller.signal, (): Promise<void> => {
-  //             controller.signal.throwIfAborted();
-  //             controller.abort(new Error('Already disposed.'));
-  //
-  //             return dispose().then(resolve, reject);
-  //           });
-  //
-  //           if (controller.signal.aborted) {
-  //             await disposePromise;
-  //           }
-  //         }
-  //       }
-  //     }
-  //   });
-  // }
-
-  // fork({
-  //   queuingStrategy = CountSharedQueue.zero,
-  //   disposeHook,
-  // }: ReadableFlowForkOptions = {}): ReadableFlow<GValue, GArguments> {
-  //   const self: ReadableFlow<GValue, GArguments> = this;
-  //
-  //   type IteratorPromise = Promise<IteratorResult<GValue, void>>;
-  //
-  //   let consumers: number = 0;
-  //   let readerController: AbortController | undefined;
-  //   let reader: FlowReader<GValue> | undefined;
-  //   let sharedQueue: SharedQueue<IteratorPromise> | undefined;
-  //   let iteratorStepPromise: IteratorPromise | undefined;
-  //
-  //   let disposeController: AbortController | undefined;
-  //   let disposePromise: Promise<void> | undefined;
-  //
-  //   return new ReadableFlow<GValue, GArguments>(async function* (
-  //     { signal }: ReadableFlowContext,
-  //     ...args: GArguments
-  //   ): ReadableFlowIterator<GValue> {
-  //     signal.throwIfAborted();
-  //
-  //     if (disposeController !== undefined) {
-  //       // abort postponed dispose
-  //       disposeController.abort(new Error('Cancelled.'));
-  //       disposeController = undefined;
-  //       disposePromise = undefined;
-  //     }
-  //
-  //     if (disposePromise !== undefined) {
-  //       await abortify(disposePromise.catch(noop), { signal });
-  //     }
-  //
-  //     consumers++;
-  //
-  //     try {
-  //       if (reader === undefined) {
-  //         readerController = new AbortController();
-  //         reader = self.open(readerController.signal, ...args);
-  //         sharedQueue = queuingStrategy<IteratorPromise>();
-  //       }
-  //
-  //       const localQueue: SharedQueueFork<IteratorPromise> = sharedQueue!.fork();
-  //       let localIteratorStepPromise: IteratorPromise | undefined;
-  //
-  //       while (true) {
-  //         let cachedIteratorStepPromise: IteratorPromise | None;
-  //         // dequeue the steps of the queue that have already been treated
-  //         while ((cachedIteratorStepPromise = localQueue.pull()) === localIteratorStepPromise);
-  //
-  //         if (cachedIteratorStepPromise === NONE) {
-  //           // └> no step in the queue
-  //           if (iteratorStepPromise === undefined) {
-  //             // └> no shared step
-  //             // => we need to iterate
-  //             iteratorStepPromise = reader.next().finally((): void => {
-  //               iteratorStepPromise = undefined;
-  //             });
-  //             // append the step to the queue
-  //             sharedQueue!.push(iteratorStepPromise);
-  //           }
-  //           localIteratorStepPromise = iteratorStepPromise;
-  //         } else {
-  //           // => use the cached step
-  //           localIteratorStepPromise = cachedIteratorStepPromise;
-  //         }
-  //
-  //         const result: IteratorResult<GValue, void> = await abortify(localIteratorStepPromise, {
-  //           signal,
-  //         });
-  //
-  //         if (result.done) {
-  //           return result.value;
-  //         } else {
-  //           yield result.value;
-  //           // NOTE: we do not propagate any `.throw` directly to the reader, similar to `.return`.
-  //         }
-  //       }
-  //     } finally {
-  //       consumers--;
-  //
-  //       if (consumers === 0) {
-  //         const dispose = async (): Promise<void> => {
-  //           readerController!.abort(signal.reason);
-  //           readerController = undefined;
-  //
-  //           try {
-  //             return await reader![Symbol.asyncDispose]();
-  //           } finally {
-  //             reader = undefined;
-  //             sharedQueue = undefined;
-  //             disposeController = undefined;
-  //             disposePromise = undefined;
-  //           }
-  //         };
-  //
-  //         if (disposeHook === undefined) {
-  //           await (disposePromise = dispose());
-  //         } else {
-  //           const controller: AbortController = new AbortController();
-  //           const { promise, resolve, reject } = Promise.withResolvers<any>();
-  //           disposeController = controller;
-  //           disposePromise = promise;
-  //
-  //           disposeHook(controller.signal, (): Promise<void> => {
-  //             controller.signal.throwIfAborted();
-  //             controller.abort(new Error('Already disposed.'));
-  //
-  //             return dispose().then(resolve, reject);
-  //           });
-  //
-  //           if (controller.signal.aborted) {
-  //             await disposePromise;
-  //           }
-  //         }
-  //       }
-  //     }
-  //   });
-  // }
-
   /* INSPECT THE FLOW */
 
-  inspect(options: FlowInspectOptions<GValue, GArguments> = {}): ReadableFlow<GValue, GArguments> {
+  /**
+   * Inspects the flow by invoking specified callbacks at various stages of its lifecycle.
+   * Allows the execution of provided hooks to monitor or manipulate the flow's behavior.
+   *
+   * @param {ReadableFlowInspectOptions<GValue, GArguments>} [options={}] The set of lifecycle hooks to be invoked.
+   * - `open`: A callback invoked when the flow starts.
+   * - `next`: A callback invoked for each value being yielded by the flow.
+   * - `error`: A callback invoked when an error occurs in the flow.
+   * - `close`: A callback invoked when the flow finishes or is closed.
+   * @return {ReadableFlow<GValue, GArguments>} A new readable flow with inspection hooks applied.
+   */
+  inspect(
+    options: ReadableFlowInspectOptions<GValue, GArguments> = {},
+  ): ReadableFlow<GValue, GArguments> {
     const self: ReadableFlow<GValue, GArguments> = this;
 
-    const run = <GKey extends keyof FlowInspectOptions<GValue, GArguments>>(
+    const run = <GKey extends keyof ReadableFlowInspectOptions<GValue, GArguments>>(
       key: GKey,
-      ...args: Parameters<Required<FlowInspectOptions<GValue, GArguments>>[GKey]>
+      ...args: Parameters<Required<ReadableFlowInspectOptions<GValue, GArguments>>[GKey]>
     ): void => {
-      const fnc: FlowInspectOptions<GValue, GArguments>[GKey] | undefined = Reflect.get(
+      const fnc: ReadableFlowInspectOptions<GValue, GArguments>[GKey] | undefined = Reflect.get(
         options,
         key,
       );
@@ -885,7 +852,38 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
     });
   }
 
-  finally(finallyFnc: () => PromiseLike<void> | void): ReadableFlow<GValue, GArguments> {
+  /**
+   * Registers a callback to handle errors thrown during the execution of the current flow.
+   *
+   * @param {ReadableFlowCatchFunction<GNewValue>} callback - A callback function to handle errors. It takes the thrown error as its parameter and must return a new readable flow as its result.
+   * @return {ReadableFlow<GValue | GNewValue, GArguments>} A new readable flow that continues with the current flow's results or with the result of the error handling callback in case of an error.
+   */
+  catch<GNewValue>(
+    callback: ReadableFlowCatchFunction<GNewValue>,
+  ): ReadableFlow<GValue | GNewValue, GArguments> {
+    const self: ReadableFlow<GValue, GArguments> = this;
+
+    return new ReadableFlow<GValue | GNewValue, GArguments>(async function* (
+      ctx: ReadableFlowContext,
+      ...args: GArguments
+    ): ReadableFlowIterator<GValue | GNewValue> {
+      try {
+        yield* self.use(ctx, ...args);
+      } catch (error: unknown) {
+        yield* callback(error).use(ctx);
+      }
+    });
+  }
+
+  /**
+   * Registers a function to be executed when the flow is completed, regardless of whether it succeeded or failed.
+   *
+   * @param {ReadableFlowFinallyFunction} finallyFnc - A function to be invoked after the flow has been executed.
+   * It can optionally return a promise, and the flow will wait for the promise to resolve or reject.
+   * @return {ReadableFlow<GValue, GArguments>} A new instance of ReadableFlow that ensures the provided `finally` function
+   * is executed after the flow completes.
+   */
+  finally(finallyFnc: ReadableFlowFinallyFunction): ReadableFlow<GValue, GArguments> {
     const self: ReadableFlow<GValue, GArguments> = this;
 
     return new ReadableFlow<GValue, GArguments>(async function* (
@@ -895,19 +893,95 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
       try {
         yield* self.use(ctx, ...args);
       } finally {
-        await finallyFnc();
+        await finallyFnc(ctx.signal);
       }
     });
   }
 
   /* PROMISE-BASED RETURN */
 
+  /**
+   * Converts this readable flow into an array containing the values emitted by the flow.
+   *
+   * @param {AbortSignal} signal - An AbortSignal to allow for the operation to be canceled.
+   * @param {...GArguments} args - Additional arguments to pass to the `open` method.
+   * @return {Promise<GValue[]>} A promise that resolves to an array of `GValue`.
+   */
   toArray(signal: AbortSignal, ...args: GArguments): Promise<GValue[]> {
     return Array.fromAsync<GValue>(this.open(signal, ...args));
   }
 
-  // TODO: forEach, find
+  /**
+   * Retrieves the first value sent by the flow.
+   * If the stream is completed without sending a value, an error is thrown.
+   *
+   * @param {AbortSignal} signal - An AbortSignal to allow for the operation to be canceled.
+   * @param {...GArguments} args - Additional arguments to pass to the flow.
+   * @return {Promise<GValue>} A promise that resolves to the first value emitted by the flow.
+   * @throws {Error} If the flow completes without sending a value.
+   */
+  async first(signal: AbortSignal, ...args: GArguments): Promise<GValue> {
+    await using reader: FlowReader<GValue> = this.open(signal, ...args);
 
+    const result: IteratorResult<GValue, void> = await reader.next();
+
+    if (result.done) {
+      throw new Error('Complete without sending a value.');
+    }
+
+    return result.value;
+  }
+
+  /**
+   * Retrieves the last value emitted by the flow.
+   *
+   * @param {AbortSignal} signal - An AbortSignal to allow for the operation to be canceled.
+   * @param {...GArguments} args - Additional arguments to pass to the flow.
+   * @return {Promise<GValue>} A promise that resolves to the last emitted value.
+   * @throws {Error} If the operation completes without emitting any value.
+   */
+  async last(signal: AbortSignal, ...args: GArguments): Promise<GValue> {
+    let lastValue: GValue;
+    let hasValue: boolean = false;
+
+    for await (const value of this.open(signal, ...args)) {
+      lastValue = value;
+      hasValue = true;
+    }
+
+    if (!hasValue) {
+      throw new Error('Complete without sending a value.');
+    }
+
+    return lastValue!;
+  }
+
+  /**
+   * Iterates over the flow and invokes the provided callback for each value.
+   *
+   * @param {AbortSignal} signal - An AbortSignal to allow for the operation to be canceled.
+   * @param {ReadableFlowForEachFunction<GValue>} callback - The function to execute for each value in the flow.
+   * @param {GArguments} args - Additional arguments to pass to the flow.
+   * @return {Promise<void>} A promise that resolves once all values have been processed or rejects if an error occurs.
+   */
+  async forEach(
+    signal: AbortSignal,
+    callback: ReadableFlowForEachFunction<GValue>,
+    ...args: GArguments
+  ): Promise<void> {
+    for await (const value of this.open(signal, ...args)) {
+      await callback(value, signal);
+    }
+  }
+
+  /**
+   * Returns `true` if one of the values emitted by the flow satisfies the provided predicate.
+   *
+   * @param {AbortSignal} signal - An AbortSignal to allow for the operation to be canceled.
+   * @param {FilterFunction<GValue>} predicate - A function to test each value from the flow. It should return a boolean.
+   * @param {...GArguments} args - Additional arguments to pass to the flow.
+   * @return {Promise<boolean>} A promise that resolves to true if at least one value satisfies the predicate, otherwise false.
+   */
   async some(
     signal: AbortSignal,
     predicate: FilterFunction<GValue>,
@@ -921,6 +995,14 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
     return false;
   }
 
+  /**
+   * Returns `true` if all the values emitted by the flow satisfy the provided predicate.
+   *
+   * @param {AbortSignal} signal - An AbortSignal to allow for the operation to be canceled.
+   * @param {FilterFunction<GValue>} predicate - A function to test each value from the flow. It should return a boolean.
+   * @param {...GArguments} args - Additional arguments to pass to the flow.
+   * @return {Promise<boolean>} A promise that resolves to true if all the values satisfy the predicate, otherwise false.
+   */
   async every(
     signal: AbortSignal,
     predicate: FilterFunction<GValue>,
@@ -934,6 +1016,15 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
     return true;
   }
 
+  /**
+   * Reduces the values produced by the flow using the provided reducer function.
+   *
+   * @param {AbortSignal} signal - An AbortSignal to allow for the operation to be canceled.
+   * @param {ReduceFunction<GValue, GReducedValue>} reducer - A function that takes the accumulated value and the current value, and returns the new accumulated value.
+   * @param {GReducedValue | None} initialValue - The initial value for the reduction or a special value indicating no initial value.
+   * @param {...GArguments} args - Additional arguments to pass to the flow.
+   * @return {Promise<GReducedValue>} A promise that resolves with the final reduced value after the iteration completes.
+   */
   reduce(
     signal: AbortSignal,
     reducer: ReduceFunction<GValue, GValue>,
@@ -964,36 +1055,45 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
     return initialValue as GReducedValue;
   }
 
-  async first(signal: AbortSignal, ...args: GArguments): Promise<GValue> {
-    await using reader: FlowReader<GValue> = this.open(signal, ...args);
-
-    const result: IteratorResult<GValue, void> = await reader.next();
-
-    if (result.done) {
-      throw new Error('Complete without sending a value.');
-    }
-
-    return result.value;
-  }
-
-  async last(signal: AbortSignal, ...args: GArguments): Promise<GValue> {
-    let lastValue: GValue;
-    let hasValue: boolean = false;
-
+  /**
+   * Finds an item in a collection that matches the provided predicate.
+   *
+   * @param {AbortSignal} signal - An AbortSignal to allow for the operation to be canceled.
+   * @param {FilterFunctionWithSubType<GValue, GFilteredValue>} predicate - A function used to test each item in the collection.
+   * @param {...GArguments} args - Additional arguments to pass to the flow.
+   * @return {Promise<GFilteredValue | undefined>} A promise that resolves to the first item that matches the predicate, or `undefined` if no match is found.
+   */
+  find<GFilteredValue extends GValue>(
+    signal: AbortSignal,
+    predicate: FilterFunctionWithSubType<GValue, GFilteredValue>,
+    ...args: GArguments
+  ): Promise<GFilteredValue | undefined>;
+  find(
+    signal: AbortSignal,
+    predicate: FilterFunction<GValue>,
+    ...args: GArguments
+  ): Promise<GValue | undefined>;
+  async find(
+    signal: AbortSignal,
+    predicate: FilterFunction<GValue>,
+    ...args: GArguments
+  ): Promise<GValue | undefined> {
     for await (const value of this.open(signal, ...args)) {
-      lastValue = value;
-      hasValue = true;
+      if (predicate(value)) {
+        return value;
+      }
     }
-
-    if (!hasValue) {
-      throw new Error('Complete without sending a value.');
-    }
-
-    return lastValue!;
+    return undefined;
   }
 
   /* CAST TO OTHER KIND OF STREAMS */
 
+  /**
+   * Converts this flow into a `ReadableStream`. This stream mimics the behavior of this flow.
+   *
+   * @param {...GArguments} args - Additional arguments to pass to the flow.
+   * @return {ReadableStream<GValue>} A `ReadableStream` that mimics the behavior of this flow.
+   */
   toReadableStream(...args: GArguments): ReadableStream<GValue> {
     let reader: FlowReader<GValue>;
     const abortController: AbortController = new AbortController();
