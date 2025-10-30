@@ -1,6 +1,9 @@
 import { type MapFunction } from '@xstd/functional';
 import { type ReadableFlow } from '../flow/readable/readable-flow.js';
 
+/**
+ * A function to _drain_ (consume) a `ReadableFlow`.
+ */
 export interface DrainFlow<
   GValue,
   GReturn = void,
@@ -14,6 +17,14 @@ export interface DrainFlow<
   ): PromiseLike<GReturn> | GReturn;
 }
 
+/**
+ * Represents a _consumer_ of a `ReadableFlow`.
+ *
+ * @template GValue - Type of the values sent by the readable flow.
+ * @template GReturn - Return type of the drain method after the consumption of the flow.
+ * @template GFlowArguments - Additional arguments passed to the readable flow.
+ * @template GDrainArguments - Additional arguments passed to the drain function.
+ */
 export class Drain<
   GValue,
   GReturn = void,
@@ -26,6 +37,13 @@ export class Drain<
     this.#drain = drain;
   }
 
+  /**
+   * Consumes a `ReadableFlow` and returns a `Promise` that resolves to the return value of the drain function.
+   * @param flow - The readable flow to consume.
+   * @param signal - The signal to abort the process.
+   * @param args - Additional arguments passed to the drain function.
+   * @returns A `Promise` that resolves to the return value of the drain function.
+   */
   async drain(
     flow: ReadableFlow<GValue, GFlowArguments>,
     signal: AbortSignal,

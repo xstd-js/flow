@@ -1,9 +1,10 @@
+import { isResultErr, tryAsyncFnc, type ResultErr } from '@xstd/enum';
 import { NONE } from '@xstd/none';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReadableFlow } from './readable-flow.js';
-import { FlowReader } from './types/flow-reader.js';
-import { ReadableFlowContext } from './types/readable-flow-context.js';
-import type { PushBridge } from './types/static-methods/from-push-source/push-bridge.js';
+import { type FlowReader } from './types/flow-reader.js';
+import { type ReadableFlowContext } from './types/readable-flow-context.js';
+import { type PushBridge } from './types/static-methods/from-push-source/push-bridge.js';
 
 describe('ReadableFlow', () => {
   let controller: AbortController;
@@ -222,6 +223,95 @@ describe('ReadableFlow', () => {
             ReadableFlow.fromArray([3, 4]),
           ).toArray(controller.signal),
         ).toEqual([0, 1, 2, 3, 4]);
+      });
+    });
+
+    describe('combine', () => {
+      it('should combine array flows', async () => {
+        expect(
+          await ReadableFlow.combine([
+            ReadableFlow.fromArray([0, 1, 2]),
+            ReadableFlow.fromArray([3, 4]),
+          ]).toArray(controller.signal),
+        ).toEqual([
+          [0, 3],
+          [1, 4],
+          [2, 4],
+        ]);
+      });
+
+      it('should combine record flows', async () => {
+        expect(
+          await ReadableFlow.combine({
+            a: ReadableFlow.fromArray([0, 1, 2]),
+            b: ReadableFlow.fromArray([3, 4]),
+          }).toArray(controller.signal),
+        ).toEqual([
+          { a: 0, b: 3 },
+          { a: 1, b: 4 },
+          { a: 2, b: 4 },
+        ]);
+      });
+
+      it('should rejects with the corresponding error then disposed with error', async () => {
+        const flow = ReadableFlow.combine([
+          new ReadableFlow(async function* () {
+            try {
+              yield 0;
+            } finally {
+              throw 'error';
+            }
+          }),
+          ReadableFlow.fromArray([3, 4]),
+        ]).open(controller.signal);
+
+        await expect(flow.next()).resolves.toEqual({
+          done: false,
+          value: [0, 3],
+        });
+
+        await expect(flow[Symbol.asyncDispose]()).rejects.toThrow('error');
+      });
+
+      it('should rejects with the corresponding error aggregation then disposed with error', async () => {
+        const flow = ReadableFlow.combine([
+          new ReadableFlow<number, []>(async function* () {
+            try {
+              yield 0;
+            } finally {
+              throw 'error0';
+            }
+          }),
+          new ReadableFlow<number, []>(async function* () {
+            try {
+              yield 1;
+            } finally {
+              throw 'error1';
+            }
+          }),
+        ]).open(controller.signal);
+
+        await expect(flow.next()).resolves.toEqual({
+          done: false,
+          value: [0, 1],
+        });
+
+        const result = await tryAsyncFnc(flow[Symbol.asyncDispose]);
+        expect(isResultErr(result)).toBe(true);
+        expect((result as ResultErr).error).instanceOf(AggregateError);
+        expect(((result as ResultErr).error as AggregateError).errors).toEqual([
+          'error0',
+          'error1',
+        ]);
+      });
+
+      it('should rejects if a flow completes without sendint a value', async () => {
+        const flow = ReadableFlow.combine([
+          new ReadableFlow<number, []>(async function* () {}),
+          ReadableFlow.fromArray([3, 4]),
+        ]).open(controller.signal);
+
+        await expect(flow.next()).rejects.toThrow();
       });
     });
 

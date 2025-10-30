@@ -1,4 +1,5 @@
 import { abortify } from '@xstd/abortable';
+import { type AsyncEnumeratorObject, type EnumeratorResult } from '@xstd/enumerable';
 import { EQUAL_FUNCTION_STRICT_EQUAL } from '@xstd/equal-function';
 import {
   type FilterFunction,
@@ -11,10 +12,12 @@ import { type None, NONE } from '@xstd/none';
 import { Flow } from '../flow/flow.js';
 import { type FlowReader } from './types/flow-reader.js';
 import { type ReadableFlowCatchFunction } from './types/methods/catch/readable-flow-catch-function.js';
+import { type ReadableFlowCombineArrayResult } from './types/methods/combine/readable-flow-combine-array-result.js';
+import { type ReadableFlowCombineRecordResult } from './types/methods/combine/readable-flow-combine-record-result.js';
 import { type ReadableFlowDistinctOptions } from './types/methods/distinct/readable-flow-distinct-options.js';
 import { type ReadableFlowFinallyFunction } from './types/methods/finally/readable-flow-finally-function.js';
 import { type ReadableFlowFlatMapFunction } from './types/methods/flat-map/readable-flow-flat-map-function.js';
-import { ReadableFlowForEachFunction } from './types/methods/for-each/readable-flow-for-each-function.js';
+import { type ReadableFlowForEachFunction } from './types/methods/for-each/readable-flow-for-each-function.js';
 import { type ReadableFlowForkOptions } from './types/methods/fork/readable-flow-fork-options.js';
 import { type ReadableFlowInspectOptions } from './types/methods/inspect/readable-flow-inspect-options.js';
 import { type ReadableFlowContext } from './types/readable-flow-context.js';
@@ -260,47 +263,133 @@ export class ReadableFlow<GValue, GArguments extends readonly unknown[] = []> ex
   //   });
   // }
 
-  // TODO
-  // static combine<
-  //   GFlows extends readonly ReadableFlow<unknown, GArguments>[],
-  //   GArguments extends readonly unknown[],
-  // >(flows: GFlows): ReadableFlow<any, GArguments> {
-  //   type GValue = any;
-  //
-  //   return new ReadableFlow<GValue, GArguments>(async function* (
-  //     ctx: ReadableFlowContext,
-  //     ...args: GArguments
-  //   ): ReadableFlowIterator<GValue> {
-  //     const iterators: AsyncEnumeratorObject<void, void, void>[] = flows.map(
-  //       (flow: ReadableFlow<unknown, GArguments>): AsyncEnumeratorObject<void, unknown, void> => {
-  //         return flow.use(ctx, ...args);
-  //       },
-  //     );
-  //
-  //     const pending: Promise<EnumeratorResult<unknown, void>>[] = iterators.map(() => {
-  //
-  //     });
-  //
-  //     await Promise.all(pending);
-  //   });
-  // }
+  /**
+   * Combines multiple readable flows into a single flow that produces an array of the latest values emitted from each flow.
+   *
+   * @param {GArray} array - An array-like object containing readable flows to be combined.
+   * @return {ReadableFlow<ReadableFlowCombineArrayResult<GArray, GArguments>, GArguments>} A readable flow that outputs an array with the most recent values emitted by the input flows.
+   */
+  static combine<
+    GArray extends ArrayLike<ReadableFlow<any, GArguments>>,
+    GArguments extends readonly unknown[],
+  >(array: GArray): ReadableFlow<ReadableFlowCombineArrayResult<GArray, GArguments>, GArguments>;
+  /**
+   * Combines multiple readable flows into a single flow that produces a record of the latest values emitted from each flow.
+   *
+   * @param {GRecord} record - A record containing readable flows to be combined.
+   * @return {ReadableFlow<ReadableFlowCombineArrayResult<GRecord, GArguments>, GArguments>} A readable flow that outputs a record with the most recent values emitted by the input flows.
+   */
+  static combine<
+    GRecord extends Record<string, ReadableFlow<any, GArguments>>,
+    GArguments extends readonly unknown[],
+  >(
+    record: GRecord,
+  ): ReadableFlow<ReadableFlowCombineRecordResult<GRecord, GArguments>, GArguments>;
+  static combine<GArguments extends readonly unknown[]>(input: any): ReadableFlow<any, GArguments> {
+    if (typeof input.length === 'number') {
+      return this.#combine<ArrayLike<ReadableFlow<any, GArguments>>, GArguments>(input);
+    } else {
+      type Entry = readonly [key: string, flow: ReadableFlow<any, GArguments>];
 
-  // static combine<
-  //   GRecord extends Record<string, ReadableFlow<any, GArguments>>,
-  //   GArguments extends readonly unknown[],
-  // >(record: GRecord): ReadableFlow<any, GArguments> {
-  //   type GValue = any;
-  //   return new ReadableFlow<GValue, GArguments>(async function* (
-  //     ctx: ReadableFlowContext,
-  //     ...args: GArguments
-  //   ): ReadableFlowIterator<GValue> {
-  //     let pending: any[] = [];
-  //
-  //     for (const [key, value] of Object.entries(record)) {
-  //       const iterator: AsyncEnumeratorObject<void, void, void> = value.use(ctx, ...args);
-  //     }
-  //   });
-  // }
+      const entries: readonly Entry[] = Object.entries(input);
+
+      return this.#combine<ArrayLike<ReadableFlow<any, GArguments>>, GArguments>(
+        entries.map(([, flow]: Entry): ReadableFlow<any, GArguments> => flow),
+      ).map((combined: any): Record<string, unknown> => {
+        return Object.fromEntries(
+          entries.map(([key]: Entry, index: number): [string, unknown] => {
+            return [key, combined[index]];
+          }),
+        );
+      });
+    }
+  }
+
+  static #combine<
+    GArray extends ArrayLike<ReadableFlow<any, GArguments>>,
+    GArguments extends readonly unknown[],
+  >(array: GArray): ReadableFlow<ReadableFlowCombineArrayResult<GArray, GArguments>, GArguments> {
+    type GValue = any;
+    type PendingStep = Promise<void> | undefined;
+
+    const total: number = array.length;
+
+    return new ReadableFlow<GValue, GArguments>(async function* (
+      ctx: ReadableFlowContext,
+      ...args: GArguments
+    ): ReadableFlowIterator<GValue> {
+      ctx.signal.throwIfAborted();
+
+      await using stack: AsyncDisposableStack = new AsyncDisposableStack();
+
+      const controller: AbortController = new AbortController();
+      const signal: AbortSignal = AbortSignal.any([controller.signal, ctx.signal]);
+
+      const values: unknown[] = new Array(total);
+      let done: number = 0;
+
+      const iterators: AsyncEnumeratorObject<void, unknown, void>[] = [];
+      const pendingSteps: PendingStep[] = new Array(total);
+
+      stack.defer(async (): Promise<void> => {
+        controller.abort();
+
+        const rejectedResults: readonly PromiseRejectedResult[] = (
+          await Promise.allSettled(
+            iterators.map((iterator: AsyncEnumeratorObject<void, unknown, void>): Promise<void> => {
+              return Promise.try((): PromiseLike<void> => iterator[Symbol.asyncDispose]());
+            }),
+          )
+        ).filter((result: PromiseSettledResult<void>): result is PromiseRejectedResult => {
+          return result.status === 'rejected';
+        });
+
+        if (rejectedResults.length === 1) {
+          throw rejectedResults[0].reason;
+        } else if (rejectedResults.length > 1) {
+          throw new AggregateError(
+            rejectedResults.map((result: PromiseRejectedResult): unknown => {
+              return result.reason;
+            }),
+          );
+        }
+      });
+
+      for (let i: number = 0; i < total; i++) {
+        iterators.push(array[i].use({ ...ctx, signal }, ...args));
+        ctx.signal.throwIfAborted();
+        values[i] = NONE;
+      }
+
+      while (true) {
+        for (let i: number = 0; i < total; i++) {
+          if (pendingSteps[i] === undefined) {
+            pendingSteps[i] = iterators[i]
+              .next()
+              .then((result: EnumeratorResult<unknown, void>): void => {
+                if (result.done) {
+                  done++;
+                  if (values[i] === NONE) {
+                    throw new Error(`Flow #${i} completed without emitting a value.`);
+                  }
+                } else {
+                  values[i] = result.value;
+                  pendingSteps[i] = undefined;
+                }
+              });
+          }
+        }
+
+        await Promise.all(pendingSteps);
+
+        if (done === total) {
+          return;
+        }
+
+        yield values.slice() as unknown as GValue;
+      }
+    });
+  }
 
   /* FROM OTHER TYPES */
 

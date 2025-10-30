@@ -128,7 +128,7 @@ sequenceDiagram
   activate AgentB
   AgentA->>AgentB: push data A
   activate AgentB
-  Note over AgentA: locked until Agent B answer
+  Note over AgentA: locked until Responder answers
   Note over AgentB: becomes the owner of the stream
   Note over AgentB: process data A
   AgentB->>AgentA: push data B
@@ -136,7 +136,7 @@ sequenceDiagram
   activate AgentB
   deactivate AgentA
   activate AgentA
-  Note over AgentB: locked until Agent A answer
+  Note over AgentB: locked until Initiator answers
   Note over AgentA: becomes the owner of the stream
   Note over AgentA: process data B
   AgentA->>AgentB: push data C
@@ -148,7 +148,7 @@ sequenceDiagram
   AgentB->>AgentA: push data D
   deactivate AgentB
   activate AgentA
-  Note over AgentB: locked until Agent A answer
+  Note over AgentB: locked until Initiator answers
   Note over AgentA: becomes the owner of the stream
   Note over AgentA: process data D
   deactivate AgentA
@@ -163,30 +163,33 @@ Moreover, it becomes easy to specialize this flow:
 
 - a `readable` flow is simply - `pushes` no data (`void`), `receives` a value.
 - a `writable` flow is simply - `pushes` a value, `receives` no data (`void`).
+- a `duplex` flow follows the ping-pong pattern - it `pushes` and `receives` data alternativelly.
 
 
 ## A stream should have its own lifecycle
 
 1) A stream starts in a _closed_ state.
-1) Later, it may be _opened_, at which point it typically _acquires_ some resources (such as a file lock, a timer, an HTTP request, etc.).
+1) Later, it may be _opened_ - when happening, it typically _acquires_ some resources (such as a file lock, a timer, an HTTP request, etc.).
 1) It then sends or receives values.
-1) Finally, it may end with _completion_, an _error_, or _cancellation_ (during which it releases its resources and stops processing data).
+1) Finally, it may end with _completion_, an _error_, or _cancellation_ (during this phase, it releases its resources and stops processing data).
 
 ```mermaid
 flowchart TD
-  IdleStream(Idle Stream) -- open --> ActiveStream(Active Stream)
-  ActiveStream -- [CONSUMER] --> Pull[[Pull]]
-  Pull -- [CONSUMER] --> AwaitResult[[Await Result]]
-  Pull -- [CONSUMER] --> Abort[[Abort]]
-  AwaitResult -.-> Value{{Value}}
-    AwaitResult -.-> Error{{Error}}
-    AwaitResult -.-> Done{{Done}}
-  Value -- repeat --> ActiveStream
-  Abort --> Error
-  Error --> End
-  Done --> End
+  IdleStream((Idle Stream)) --> Open(Open)
+  Open --> ActiveStream[/Active Stream/]
+  subgraph Active
+    ActiveStream --> Pull(Pull)
+    Pull --> AwaitResult{Await Result}
+    Pull --> Abort{Abort}
+    AwaitResult -.-> Value{{Value}}
+      AwaitResult -.-> Error{{Error}}
+      AwaitResult -.-> Done{{Done}}
+    Value -- repeat --> Pull
+    Abort --> Error
+  end
+  Error --> Closed([Closed])
+  Done --> Closed
 ```
-
 
 ### Flow
 
@@ -213,24 +216,24 @@ In this scheme, the opener is called an `Initiator`, and, while iterating over t
 
 The `open` function returns an `AsyncEnumeratorObject` that provides the ping-pong mechanism to communicate between the two:
 
-1) `AsyncEnumeratorObject.next/error/return`: the `Initiator` sends a _step_ to the `Responder`
-  - `next(value)`: the `Initiator` sends a _value_ to the `Responder`
-  - `error(error)`: the `Initiator` sends an _error_ to the `Responder`
-  - `return(value)`: the `Initiator` instructs the `Responder` that it has completed.
-  - ... giving the `Responder` control of the next stream _step_.
+1) `AsyncEnumeratorObject.next/error/return`: the `Initiator` _steps_
+   - `next(value)`: the `Initiator` sends a _value_ to the `Responder`
+   - `error(error)`: the `Initiator` sends an _error_ to the `Responder`
+   - `return(value)`: the `Initiator` instructs the `Responder` that it has completed.
+   - ... giving the `Responder` control on the next _step_.
 1) `Promise<EnumeratorResult<GOut, GReturn>>`: the `Responder` then resolves the returned promise later with either:
-  - `value`: the `Responder`'s answer.
-  - `done`: the `Responder` indicates that it has no more data to send.
-  - `error`: the `Responder` errored.
-  - ... giving control back to the `Initiator`.
+   - `value`: the `Responder`'s answer.
+   - `done`: the `Responder` indicates that it has no more data to send.
+   - `error`: the `Responder` errored.
+   - ... giving control back to the `Initiator`.
 
 While the `Initiator` is waiting for the `Responder`'s answer, it may _abort_ the stream by calling `signal.abort()`.
 Similarly, the `Responder` may _abort_ the stream by _rejecting_.
 
-> Abortion implies some constraints to maintain consistent behavior:
-> - if the signal aborts while control is in the hands of the `Responder`, the `Responder` must reject with the signal's reason.
-> - if the signal aborts while control is in the hands of the `Initiator`, the `Initiator` must _step_ within a reasonable amount of time to notify the `Responder` of the abortion.
-> - aborting a stream must always end in an _error_ state.
+> Abortion implies some constraints to maintain a consistent behavior:
+> - if the signal aborts while the control is in the hands of the `Responder`, the `Responder` must reject with the signal's reason.
+> - if the signal aborts while the control is in the hands of the `Initiator`, the `Initiator` must _step_ within a reasonable amount of time to notify the `Responder` of the abortion.
+> - aborting a stream must always terminate in an _error_ state.
 
 
 #### Specializations
@@ -247,9 +250,9 @@ A `ReadableFlow` is simply a `Flow` that sends no value to the `Responder`, but 
 
 ##### Drain
 
-We can construct a `WritableFlow` (`type WritableFlow<GValue, GArguments extends readonly unknown[]> = Flow<GValue, void, void, GArguments>`),
+We may construct a `WritableFlow` (`type WritableFlow<GValue, GArguments extends readonly unknown[]> = Flow<GValue, void, void, GArguments>`),
 however, it wouldn’t be the optimal solution. Indeed, such a `Flow` would have to implement the same helper functions as a `ReadableFlow`,
-such as `.map`, `.filter`, `.take`, etc. This would require duplicating similar logic, whereas we could do better:
+such as `.map`, `.filter`, `.take`, etc. This would require duplicating similar logic, whereas we could find a simpler solution:
 
 ```ts
 interface Drain<
@@ -268,25 +271,25 @@ interface Drain<
 ```
 
 Instead, we can define a `Drain` interface that takes a `ReadableFlow` and _consumes_ it.
-Then, if necessary, just before consuming it, the `Drain` may call the `ReadableFlow`'s _helper_ functions,
+Then, if necessary, right before consuming it, the `Drain` may call the `ReadableFlow`'s _helper_ functions,
 thus avoiding the duplication of a lot of logic.
 
 
 ### AsyncIterator
 
-> But `Flow`s are identical to `AsyncGenerator`s, right?
+> But `Flow`s are identical to `AsyncGenerator`s, no?
 
-A `Flow` is **similar** but **better** than an `AsyncGenerator`. Let me explain:
+A `Flow` is **similar** but **more sophisticated** than an `AsyncGenerator`. Let me explain:
 
 - A `Flow` is constructed from an `AsyncGeneratorFunction`, so we use the same elegant and concise syntax to step through the `Flow`.
 - _Opening_ a `Flow` returns an `AsyncIterable`, so we can consume it with a `for await` loop, or `yield*`, using simple, concise, and familiar syntax.
 - As opposed to an `AsyncGenerator`:
-  - A `Flow` is _openable_: a new `Flow` is created for each invocation of `.open(...)`.
+  - A `Flow` is _openable_: a new `Flow` is created on each invocation of `.open(...)`.
   - A `Flow` is _cancellable_: it's possible to cancel the stream at any time.
-  - The `Responder` can read the first `next` value (`.next(value)`), which is not possible with an `AsyncGenerator` (see the [function.sent](https://github.com/tc39/proposal-function.sent) proposal).
+  - The `Responder` has the possibility read the first `next` value (`.next(value)`), which is not doable with an `AsyncGenerator` (see the [function.sent](https://github.com/tc39/proposal-function.sent) proposal).
   - The `Responder` can read the `return` value, which is not possible with an `AsyncGenerator`.
-  - 
-> But `Flow`s are identical to `AsyncGenerator`s right ?
+
+In consequence, a `Flow` is an _improvement_ of an `AsyncGenerator`.
 
 ---
 
