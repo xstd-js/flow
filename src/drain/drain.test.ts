@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { ReadableFlow } from '../flow/readable/readable-flow.js';
+import { Flow } from '../flow/flow.js';
 import { Drain } from './drain.js';
 
 describe('Drain', () => {
@@ -13,7 +13,7 @@ describe('Drain', () => {
     describe('open', () => {
       it('should consume a flow', async () => {
         const drain = new Drain(async function (
-          flow: ReadableFlow<number, []>,
+          flow: Flow<number, []>,
           signal: AbortSignal,
         ): Promise<number> {
           return flow.reduce(
@@ -25,16 +25,14 @@ describe('Drain', () => {
           );
         });
 
-        await expect(
-          drain.drain(ReadableFlow.fromArray([0, 1, 2]), controller.signal),
-        ).resolves.toBe(3);
+        await expect(drain.drain(Flow.fromArray([0, 1, 2]), controller.signal)).resolves.toBe(3);
       });
     });
 
     describe('transform', () => {
       it('should consume a flow', async () => {
         const drain = new Drain<number, number>(async function (
-          flow: ReadableFlow<number, []>,
+          flow: Flow<number, []>,
           signal: AbortSignal,
         ): Promise<number> {
           return flow.reduce(
@@ -46,16 +44,16 @@ describe('Drain', () => {
           );
         }).transform((drain: Drain<number, number>) => {
           return new Drain<string, number>(async function (
-            flow: ReadableFlow<string, []>,
+            flow: Flow<string, []>,
             signal: AbortSignal,
           ): Promise<number> {
             return drain.drain(flow.map(Number), signal);
           });
         });
 
-        await expect(
-          drain.drain(ReadableFlow.fromArray(['0', '1', '2']), controller.signal),
-        ).resolves.toBe(3);
+        await expect(drain.drain(Flow.fromArray(['0', '1', '2']), controller.signal)).resolves.toBe(
+          3,
+        );
       });
     });
   });

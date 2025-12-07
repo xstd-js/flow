@@ -1,8 +1,8 @@
 import { type MapFunction } from '@xstd/functional';
-import { type ReadableFlow } from '../flow/readable/readable-flow.js';
+import { type Flow } from '../flow/flow.js';
 
 /**
- * A function to _drain_ (consume) a `ReadableFlow`.
+ * A function to _drain_ (consume) a `Flow`.
  */
 export interface DrainFlow<
   GValue,
@@ -11,14 +11,14 @@ export interface DrainFlow<
   GDrainArguments extends readonly unknown[] = GFlowArguments,
 > {
   (
-    flow: ReadableFlow<GValue, GFlowArguments>,
+    flow: Flow<GValue, GFlowArguments>,
     signal: AbortSignal,
     ...args: GDrainArguments
   ): PromiseLike<GReturn> | GReturn;
 }
 
 /**
- * Represents a _consumer_ of a `ReadableFlow`.
+ * Represents a _consumer_ of a `Flow`.
  *
  * @template GValue - Type of the values sent by the readable flow.
  * @template GReturn - Return type of the drain method after the consumption of the flow.
@@ -38,14 +38,15 @@ export class Drain<
   }
 
   /**
-   * Consumes a `ReadableFlow` and returns a `Promise` that resolves to the return value of the drain function.
+   * Consumes a `Flow` and returns a `Promise` that resolves to the return value of the drain function.
+   *
    * @param flow - The readable flow to consume.
    * @param signal - The signal to abort the process.
    * @param args - Additional arguments passed to the drain function.
    * @returns A `Promise` that resolves to the return value of the drain function.
    */
   async drain(
-    flow: ReadableFlow<GValue, GFlowArguments>,
+    flow: Flow<GValue, GFlowArguments>,
     signal: AbortSignal,
     ...args: GDrainArguments
   ): Promise<GReturn> {
