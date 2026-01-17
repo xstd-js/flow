@@ -243,7 +243,7 @@ From this AsyncStepper, we may extrapolate two specializations:
 ##### Flow
 
 ```ts
-type Flow<GValue, GArguments extends readonly unknown[]> = Flow<void, GValue, void, GArguments>;
+type Flow<GValue, GArguments extends readonly unknown[]> = AsyncStepper<void, GValue, void, GArguments>;
 ```
 
 A `Flow` is simply an `AsyncStepper` that sends no value to the `Responder`, but only receives values from it.
