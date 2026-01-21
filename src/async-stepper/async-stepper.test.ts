@@ -1,8 +1,8 @@
 import { sleep } from '@xstd/abortable';
 import { NONE } from '@xstd/none';
 import { beforeEach, describe, expect, it, test, vi } from 'vitest';
-import { AsyncStepper } from './async-stepper.js';
-import { AsyncStepperContext } from './types/context/async-stepper-context.js';
+import { AsyncStepper } from './async-stepper.ts';
+import type { AsyncStepperContext } from './types/context/async-stepper-context.ts';
 
 describe('AsyncStepper', () => {
   let controller: AbortController;

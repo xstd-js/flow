@@ -4,7 +4,7 @@ This projet is open to everyone. Feel free to test the library, share it, improv
 
 ### Getting started
 
-The library requires [Node.js](https://nodejs.org/en) `22+` and [yarn](https://yarnpkg.com/).
+The library requires [Node.js](https://nodejs.org/en) `24+` and [yarn](https://yarnpkg.com/).
 
 First, we have to use the correct version of node:
 
@@ -12,7 +12,7 @@ First, we have to use the correct version of node:
 nvm use
 ```
 
-If you don't have [nvm](https://github.com/nvm-sh/nvm), you may manually install and use Node.js 22+.
+If you don't have [nvm](https://github.com/nvm-sh/nvm), you may manually install and use Node.js 24+.
 
 Then, we have to use the proper package manager (here `yarn`):
 

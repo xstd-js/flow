@@ -1,12 +1,12 @@
 import { isResultErr, tryAsyncFnc, type ResultErr } from '@xstd/enum';
 import { NONE } from '@xstd/none';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { Flow } from './flow.js';
-import { type FlowReader } from './types/flow-reader.js';
-import { mapOneArgument } from './types/methods/map-arguments/helpers/map-one-argument.js';
-import { setArguments } from './types/methods/map-arguments/helpers/set-arguments.js';
-import { type FlowContext } from './types/flow-context.js';
-import { type PushBridge } from './types/static-methods/from-push-source/push-bridge.js';
+import { Flow } from './flow.ts';
+import { type FlowContext } from './types/flow-context.ts';
+import { type FlowReader } from './types/flow-reader.ts';
+import { mapOneArgument } from './types/methods/map-arguments/helpers/map-one-argument.ts';
+import { setArguments } from './types/methods/map-arguments/helpers/set-arguments.ts';
+import { type PushBridge } from './types/static-methods/from-push-source/push-bridge.ts';
 
 describe('Flow', () => {
   let controller: AbortController;
@@ -220,10 +220,9 @@ describe('Flow', () => {
     describe('concat', () => {
       it('should concat flows', async () => {
         expect(
-          await Flow.concat(
-            Flow.fromArray([0, 1, 2]),
-            Flow.fromArray([3, 4]),
-          ).toArray(controller.signal),
+          await Flow.concat(Flow.fromArray([0, 1, 2]), Flow.fromArray([3, 4])).toArray(
+            controller.signal,
+          ),
         ).toEqual([0, 1, 2, 3, 4]);
       });
     });
@@ -231,10 +230,9 @@ describe('Flow', () => {
     describe('combine', () => {
       it('should combine array flows', async () => {
         expect(
-          await Flow.combine([
-            Flow.fromArray([0, 1, 2]),
-            Flow.fromArray([3, 4]),
-          ]).toArray(controller.signal),
+          await Flow.combine([Flow.fromArray([0, 1, 2]), Flow.fromArray([3, 4])]).toArray(
+            controller.signal,
+          ),
         ).toEqual([
           [0, 3],
           [1, 4],
@@ -326,9 +324,7 @@ describe('Flow', () => {
     describe('fromPromiseFactory', () => {
       it('should return expected values', async () => {
         expect(
-          await Flow.fromPromiseFactory(() => Promise.resolve(1)).toArray(
-            controller.signal,
-          ),
+          await Flow.fromPromiseFactory(() => Promise.resolve(1)).toArray(controller.signal),
         ).toEqual([1]);
       });
 
@@ -343,9 +339,9 @@ describe('Flow', () => {
 
     describe('fromIterable', () => {
       it('should return expected values', async () => {
-        expect(
-          await Flow.fromIterable(new Set([0, 1, 2])).toArray(controller.signal),
-        ).toEqual([0, 1, 2]);
+        expect(await Flow.fromIterable(new Set([0, 1, 2])).toArray(controller.signal)).toEqual([
+          0, 1, 2,
+        ]);
       });
 
       it('should support throw', async () => {
@@ -431,9 +427,7 @@ describe('Flow', () => {
 
     describe('fromArray', () => {
       it('should return expected values', async () => {
-        expect(await Flow.fromArray([0, 1, 2]).toArray(controller.signal)).toEqual([
-          0, 1, 2,
-        ]);
+        expect(await Flow.fromArray([0, 1, 2]).toArray(controller.signal)).toEqual([0, 1, 2]);
       });
     });
 
@@ -536,23 +530,21 @@ describe('Flow', () => {
 
     describe('distinct', () => {
       it('should emit only distinct values', async () => {
-        expect(
-          await Flow.fromIterable([0, 1, 1, 2]).distinct().toArray(controller.signal),
-        ).toEqual([0, 1, 2]);
+        expect(await Flow.fromIterable([0, 1, 1, 2]).distinct().toArray(controller.signal)).toEqual(
+          [0, 1, 2],
+        );
       });
     });
 
     describe('take', () => {
       it('should take only 2 values', async () => {
-        expect(
-          await Flow.fromIterable([0, 1, 2]).take(2).toArray(controller.signal),
-        ).toEqual([0, 1]);
+        expect(await Flow.fromIterable([0, 1, 2]).take(2).toArray(controller.signal)).toEqual([
+          0, 1,
+        ]);
       });
 
       it('should accept 0 or less', async () => {
-        expect(
-          await Flow.fromIterable([0, 1, 2]).take(0).toArray(controller.signal),
-        ).toEqual([]);
+        expect(await Flow.fromIterable([0, 1, 2]).take(0).toArray(controller.signal)).toEqual([]);
       });
     });
 
@@ -586,15 +578,15 @@ describe('Flow', () => {
 
     describe('drop', () => {
       it('should drop 1 value', async () => {
-        expect(
-          await Flow.fromIterable([0, 1, 2]).drop(1).toArray(controller.signal),
-        ).toEqual([1, 2]);
+        expect(await Flow.fromIterable([0, 1, 2]).drop(1).toArray(controller.signal)).toEqual([
+          1, 2,
+        ]);
       });
 
       it('should accept 0 or less', async () => {
-        expect(
-          await Flow.fromIterable([0, 1, 2]).drop(0).toArray(controller.signal),
-        ).toEqual([0, 1, 2]);
+        expect(await Flow.fromIterable([0, 1, 2]).drop(0).toArray(controller.signal)).toEqual([
+          0, 1, 2,
+        ]);
       });
     });
 
@@ -784,9 +776,9 @@ describe('Flow', () => {
 
     describe('inspect', () => {
       it('should accept empty argument', async () => {
-        expect(
-          await Flow.fromIterable([0, 1]).inspect().toArray(controller.signal),
-        ).toEqual([0, 1]);
+        expect(await Flow.fromIterable([0, 1]).inspect().toArray(controller.signal)).toEqual([
+          0, 1,
+        ]);
       });
 
       it("should hook flow's state", async () => {
@@ -879,9 +871,9 @@ describe('Flow', () => {
     describe('finally', () => {
       it('should be called when the flow ends', async () => {
         const spy = vi.fn();
-        expect(
-          await Flow.fromIterable([0, 1, 2]).finally(spy).toArray(controller.signal),
-        ).toEqual([0, 1, 2]);
+        expect(await Flow.fromIterable([0, 1, 2]).finally(spy).toArray(controller.signal)).toEqual([
+          0, 1, 2,
+        ]);
 
         expect(spy).toHaveBeenCalledTimes(1);
       });
@@ -889,9 +881,7 @@ describe('Flow', () => {
 
     describe('toArray', () => {
       it('should returns the expected value', async () => {
-        expect(await Flow.fromIterable([0, 1, 2]).toArray(controller.signal)).toEqual([
-          0, 1, 2,
-        ]);
+        expect(await Flow.fromIterable([0, 1, 2]).toArray(controller.signal)).toEqual([0, 1, 2]);
       });
     });
 
@@ -899,11 +889,7 @@ describe('Flow', () => {
       it('should return the first value', async () => {
         let disposed: boolean = false;
 
-        const flow = new Flow<number>(async function* (): AsyncGenerator<
-          number,
-          void,
-          void
-        > {
+        const flow = new Flow<number>(async function* (): AsyncGenerator<number, void, void> {
           try {
             yield 1;
             expect.unreachable();
@@ -919,11 +905,7 @@ describe('Flow', () => {
       it('should throw when there is no value', async () => {
         let disposed: boolean = false;
 
-        const flow = new Flow<number>(async function* (): AsyncGenerator<
-          number,
-          void,
-          void
-        > {
+        const flow = new Flow<number>(async function* (): AsyncGenerator<number, void, void> {
           disposed = true;
         });
 
@@ -936,11 +918,7 @@ describe('Flow', () => {
       it('should return the last value', async () => {
         let disposed: boolean = false;
 
-        const flow = new Flow<number>(async function* (): AsyncGenerator<
-          number,
-          void,
-          void
-        > {
+        const flow = new Flow<number>(async function* (): AsyncGenerator<number, void, void> {
           try {
             yield 1;
             yield 2;
@@ -956,11 +934,7 @@ describe('Flow', () => {
       it('should throw when there is no value', async () => {
         let disposed: boolean = false;
 
-        const flow = new Flow<number>(async function* (): AsyncGenerator<
-          number,
-          void,
-          void
-        > {
+        const flow = new Flow<number>(async function* (): AsyncGenerator<number, void, void> {
           disposed = true;
         });
 
@@ -986,41 +960,37 @@ describe('Flow', () => {
 
     describe('some', () => {
       it('accepts one value', async () => {
-        expect(
-          await Flow.fromIterable([0, 1, 2]).some(controller.signal, (v) => v === 1),
-        ).toBe(true);
+        expect(await Flow.fromIterable([0, 1, 2]).some(controller.signal, (v) => v === 1)).toBe(
+          true,
+        );
       });
 
       it('rejects all values', async () => {
-        expect(
-          await Flow.fromIterable([0, 1, 2]).some(controller.signal, (v) => v === 4),
-        ).toBe(false);
+        expect(await Flow.fromIterable([0, 1, 2]).some(controller.signal, (v) => v === 4)).toBe(
+          false,
+        );
       });
 
       it('supports no data', async () => {
-        expect(await Flow.fromIterable([]).some(controller.signal, (v) => v === 4)).toBe(
-          false,
-        );
+        expect(await Flow.fromIterable([]).some(controller.signal, (v) => v === 4)).toBe(false);
       });
     });
 
     describe('every', () => {
       it('accepts every values', async () => {
-        expect(
-          await Flow.fromIterable([0, 1, 2]).every(controller.signal, (v) => v !== -4),
-        ).toBe(true);
+        expect(await Flow.fromIterable([0, 1, 2]).every(controller.signal, (v) => v !== -4)).toBe(
+          true,
+        );
       });
 
       it('rejects one value', async () => {
-        expect(
-          await Flow.fromIterable([0, 1, 2]).every(controller.signal, (v) => v !== 2),
-        ).toBe(false);
+        expect(await Flow.fromIterable([0, 1, 2]).every(controller.signal, (v) => v !== 2)).toBe(
+          false,
+        );
       });
 
       it('supports no data', async () => {
-        expect(await Flow.fromIterable([]).every(controller.signal, (v) => v === 4)).toBe(
-          true,
-        );
+        expect(await Flow.fromIterable([]).every(controller.signal, (v) => v === 4)).toBe(true);
       });
     });
 
@@ -1035,11 +1005,7 @@ describe('Flow', () => {
         ).toBe(3);
 
         expect(
-          await Flow.fromIterable([0, 1, 2]).reduce(
-            controller.signal,
-            (sum, v) => sum + v,
-            NONE,
-          ),
+          await Flow.fromIterable([0, 1, 2]).reduce(controller.signal, (sum, v) => sum + v, NONE),
         ).toBe(3);
       });
     });

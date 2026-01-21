@@ -1,4 +1,4 @@
-import { type FlowMapArgumentsFunction } from '../flow-map-arguments-function.js';
+import { type FlowMapArgumentsFunction } from '../flow-map-arguments-function.ts';
 
 /**
  * Used to set the arguments of a Flow.

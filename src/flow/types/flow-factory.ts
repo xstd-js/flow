@@ -1,5 +1,5 @@
-import { type FlowContext } from './flow-context.js';
-import { type FlowIterator } from './flow-iterator.js';
+import { type FlowContext } from './flow-context.ts';
+import { type FlowIterator } from './flow-iterator.ts';
 
 /**
  * The function to provide to a Flow.

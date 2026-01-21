@@ -1,5 +1,5 @@
 import { type MapFunction } from '@xstd/functional';
-import { type Flow } from '../flow/flow.js';
+import { type Flow } from '../flow/flow.ts';
 
 /**
  * A function to _drain_ (consume) a `Flow`.

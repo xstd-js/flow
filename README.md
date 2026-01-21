@@ -27,7 +27,7 @@ Flow is great for automation:
 ```ts
 async function automation(signal: AbortSignal) {
   // Let's assume we have:
-  const temperatureObserver: ReadableFlow<number> = /*...*/; // emits the temperature of a device
+  const temperatureObserver: Flow<number> = /*...*/; // emits the temperature of a device
   const airCoolingOnOffWriter: Drain<boolean> = /*...*/; // turns on/off an air cooling device
   
   
@@ -58,14 +58,14 @@ interface Drag {
 }
 
 async function main(signal: AbortSignal) {
-  const readable = ReadableFlow.when<PointerEvent>(window, 'pointerdown')
-    .flatMap((event: PointerEvent): ReadableFlow<Drag> => {
+  const readable = Flow.when<PointerEvent>(window, 'pointerdown')
+    .flatMap((event: PointerEvent): Flow<Drag> => {
       const originX: number = event.clientX;
       const originY: number = event.clientY;
 
       return (
-        ReadableFlow.when<PointerEvent>(window, 'pointermove')
-          .takeUntil(ReadableFlow.when(window, 'pointerup'))
+        Flow.when<PointerEvent>(window, 'pointermove')
+          .takeUntil(Flow.when(window, 'pointerup'))
           .map((event: PointerEvent): Drag => {
             const currentX: number = event.clientX;
             const currentY: number = event.clientY;

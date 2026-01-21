@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { Flow } from '../flow/flow.js';
-import { Drain } from './drain.js';
+import { Flow } from '../flow/flow.ts';
+import { Drain } from './drain.ts';
 
 describe('Drain', () => {
   let controller: AbortController;

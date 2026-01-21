@@ -9,25 +9,25 @@ import {
   type ReduceFunction,
 } from '@xstd/functional';
 import { type None, NONE } from '@xstd/none';
-import { AsyncStepper } from '../async-stepper/async-stepper.js';
-import { type FlowContext } from './types/flow-context.js';
-import { type FlowIterator } from './types/flow-iterator.js';
-import { type FlowReader } from './types/flow-reader.js';
-import { type FlowCatchFunction } from './types/methods/catch/flow-catch-function.js';
-import { type FlowCombineArrayResult } from './types/methods/combine/flow-combine-array-result.js';
-import { type FlowCombineRecordResult } from './types/methods/combine/flow-combine-record-result.js';
-import { type FlowDistinctOptions } from './types/methods/distinct/flow-distinct-options.js';
-import { type FlowFinallyFunction } from './types/methods/finally/flow-finally-function.js';
-import { type FlowFlatMapFunction } from './types/methods/flat-map/flow-flat-map-function.js';
-import { type FlowForEachFunction } from './types/methods/for-each/flow-for-each-function.js';
-import { type FlowForkOptions } from './types/methods/fork/flow-fork-options.js';
-import { type FlowInspectOptions } from './types/methods/inspect/flow-inspect-options.js';
-import { type FlowMapArgumentsFunction } from './types/methods/map-arguments/flow-map-arguments-function.js';
-import { type FlowFromPromiseFactoryFunction } from './types/static-methods/from-promise-factory/flow-from-promise-factory-function.js';
-import { type InitPushSource } from './types/static-methods/from-push-source/init-push-source.js';
-import { type PushBridge } from './types/static-methods/from-push-source/push-bridge.js';
-import { type PushToPullOptions } from './types/static-methods/from-push-source/push-to-pull-options.js';
-import { type QueueStep } from './types/static-methods/from-push-source/queue-step.js';
+import { AsyncStepper } from '../async-stepper/async-stepper.ts';
+import { type FlowContext } from './types/flow-context.ts';
+import { type FlowIterator } from './types/flow-iterator.ts';
+import { type FlowReader } from './types/flow-reader.ts';
+import { type FlowCatchFunction } from './types/methods/catch/flow-catch-function.ts';
+import { type FlowCombineArrayResult } from './types/methods/combine/flow-combine-array-result.ts';
+import { type FlowCombineRecordResult } from './types/methods/combine/flow-combine-record-result.ts';
+import { type FlowDistinctOptions } from './types/methods/distinct/flow-distinct-options.ts';
+import { type FlowFinallyFunction } from './types/methods/finally/flow-finally-function.ts';
+import { type FlowFlatMapFunction } from './types/methods/flat-map/flow-flat-map-function.ts';
+import { type FlowForEachFunction } from './types/methods/for-each/flow-for-each-function.ts';
+import { type FlowForkOptions } from './types/methods/fork/flow-fork-options.ts';
+import { type FlowInspectOptions } from './types/methods/inspect/flow-inspect-options.ts';
+import { type FlowMapArgumentsFunction } from './types/methods/map-arguments/flow-map-arguments-function.ts';
+import { type FlowFromPromiseFactoryFunction } from './types/static-methods/from-promise-factory/flow-from-promise-factory-function.ts';
+import { type InitPushSource } from './types/static-methods/from-push-source/init-push-source.ts';
+import { type PushBridge } from './types/static-methods/from-push-source/push-bridge.ts';
+import { type PushToPullOptions } from './types/static-methods/from-push-source/push-to-pull-options.ts';
+import { type QueueStep } from './types/static-methods/from-push-source/queue-step.ts';
 
 /**
  * Represents a stream of values that can be consumed asynchronously.

@@ -1,4 +1,4 @@
-import { type AsyncStepperContext } from '../context/async-stepper-context.js';
+import { type AsyncStepperContext } from '../context/async-stepper-context.ts';
 
 /**
  * The function to provide to an async stepper.

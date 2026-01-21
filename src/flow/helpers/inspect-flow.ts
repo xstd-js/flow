@@ -1,4 +1,4 @@
-import { type FlowInspectOptions } from '../types/methods/inspect/flow-inspect-options.js';
+import { type FlowInspectOptions } from '../types/methods/inspect/flow-inspect-options.ts';
 
 const COLOR_SCHEME =
   typeof window !== 'undefined' &&

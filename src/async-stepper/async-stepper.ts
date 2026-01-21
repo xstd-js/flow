@@ -2,8 +2,8 @@ import { listen } from '@xstd/disposable';
 import { isResultOk, type Result, tryAsyncFnc } from '@xstd/enum';
 import { type AsyncEnumeratorObject, type EnumeratorResult } from '@xstd/enumerable';
 import { NONE } from '@xstd/none';
-import { type AsyncStepperContext } from './types/context/async-stepper-context.js';
-import { type AsyncStepperFactory } from './types/factory/async-stepper-factory.js';
+import { type AsyncStepperContext } from './types/context/async-stepper-context.ts';
+import { type AsyncStepperFactory } from './types/factory/async-stepper-factory.ts';
 
 /**
  * An `AsyncStepper` is a wrapper around an `AsyncGenerator` factory.

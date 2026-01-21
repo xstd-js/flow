@@ -191,12 +191,12 @@ flowchart TD
   Done --> Closed
 ```
 
-### Flow
+### AsyncStepper
 
-From these rules, we can define a `Flow` interface:
+From these rules, we can define a `AsyncStepper` interface:
 
 ```ts
-interface Flow<GIn, GOut, GReturn, GArguments extends readonly unknown[]> {
+interface AsyncStepper<GIn, GOut, GReturn, GArguments extends readonly unknown[]> {
   open(signal: AbortSignal, ...args: GArguments): AsyncEnumeratorObject<GIn, GOut, GReturn>;
 }
 
@@ -207,9 +207,9 @@ interface AsyncEnumeratorObject<GIn, GOut, GReturn> {
 }
 ```
 
-#### Flow.open
+#### AsyncStepper.open
 
-The `Flow.open` method is the entry point to the stream.
+The `AsyncStepper.open` method is the entry point to the stream.
 A **required** `AbortSignal` is provided to allow canceling the stream.
 
 In this scheme, the opener is called an `Initiator`, and, while iterating over the stream, it will periodically exchange the stream's controls with a `Responder`.
@@ -238,20 +238,20 @@ Similarly, the `Responder` may _abort_ the stream by _rejecting_.
 
 #### Specializations
 
-From this Flow, we may extrapolate two specializations:
+From this AsyncStepper, we may extrapolate two specializations:
 
-##### ReadableFlow
+##### Flow
 
 ```ts
-type ReadableFlow<GValue, GArguments extends readonly unknown[]> = Flow<void, GValue, void, GArguments>;
+type Flow<GValue, GArguments extends readonly unknown[]> = AsyncStepper<void, GValue, void, GArguments>;
 ```
 
-A `ReadableFlow` is simply a `Flow` that sends no value to the `Responder`, but only receives values from it.
+A `Flow` is simply an `AsyncStepper` that sends no value to the `Responder`, but only receives values from it.
 
 ##### Drain
 
-We may construct a `WritableFlow` (`type WritableFlow<GValue, GArguments extends readonly unknown[]> = Flow<GValue, void, void, GArguments>`),
-however, it wouldn’t be the optimal solution. Indeed, such a `Flow` would have to implement the same helper functions as a `ReadableFlow`,
+We may construct a `WritableFlow` (`type WritableFlow<GValue, GArguments extends readonly unknown[]> = AsyncStepper<GValue, void, void, GArguments>`),
+however, it wouldn’t be the optimal solution. Indeed, such an `AsyncStepper` would have to implement the same helper functions as a `Flow`,
 such as `.map`, `.filter`, `.take`, etc. This would require duplicating similar logic, whereas we could find a simpler solution:
 
 ```ts
@@ -263,33 +263,33 @@ interface Drain<
 > {
   
   drain(
-    flow: ReadableFlow<GValue, GFlowArguments>,
+    flow: Flow<GValue, GFlowArguments>,
     signal: AbortSignal,
     ...args: GDrainArguments
   ): Promise<GReturn>;
 }
 ```
 
-Instead, we can define a `Drain` interface that takes a `ReadableFlow` and _consumes_ it.
-Then, if necessary, right before consuming it, the `Drain` may call the `ReadableFlow`'s _helper_ functions,
+Instead, we can define a `Drain` interface that takes a `Flow` and _consumes_ it.
+Then, if necessary, right before consuming it, the `Drain` may call the `Flow`'s _helper_ functions,
 thus avoiding the duplication of a lot of logic.
 
 
 ### AsyncIterator
 
-> But `Flow`s are identical to `AsyncGenerator`s, no?
+> But `AsyncStepper`s are identical to `AsyncGenerator`s, no?
 
-A `Flow` is **similar** but **more sophisticated** than an `AsyncGenerator`. Let me explain:
+An `AsyncStepper` is **similar** but **more sophisticated** than an `AsyncGenerator`. Let me explain:
 
-- A `Flow` is constructed from an `AsyncGeneratorFunction`, so we use the same elegant and concise syntax to step through the `Flow`.
-- _Opening_ a `Flow` returns an `AsyncIterable`, so we can consume it with a `for await` loop, or `yield*`, using simple, concise, and familiar syntax.
+- An `AsyncStepper` is constructed from an `AsyncGeneratorFunction`, so we use the same elegant and concise syntax to step through the `AsyncStepper`.
+- _Opening_ a `AsyncStepper` returns an `AsyncIterable`, so we can consume it with a `for await` loop, or `yield*`, using simple, concise, and familiar syntax.
 - As opposed to an `AsyncGenerator`:
-  - A `Flow` is _openable_: a new `Flow` is created on each invocation of `.open(...)`.
-  - A `Flow` is _cancellable_: it's possible to cancel the stream at any time.
+  - An `AsyncStepper` is _openable_: a new `AsyncStepper` is created on each invocation of `.open(...)`.
+  - An `AsyncStepper` is _cancellable_: it's possible to cancel the stream at any time.
   - The `Responder` has the possibility read the first `next` value (`.next(value)`), which is not doable with an `AsyncGenerator` (see the [function.sent](https://github.com/tc39/proposal-function.sent) proposal).
   - The `Responder` can read the `return` value, which is not possible with an `AsyncGenerator`.
 
-In consequence, a `Flow` is an _improvement_ of an `AsyncGenerator`.
+In consequence, an `AsyncStepper` is an _improvement_ of an `AsyncGenerator`.
 
 ---
 
@@ -304,10 +304,10 @@ It's **not an easy task**, as each implementation attempts to solve specific sho
 
 There is no universal answer - the best solution often depends on the context, how the streams will be used, and what requirements matter most in a given scenario.
 
-For example, if your project benefits more from synchronous streams, then `Flow` might not be what you're looking for - you'd likely prefer a more specialized implementation tailored to your specific needs.
+For example, if your project benefits more from synchronous streams, then `AsyncStepper` might not be what you're looking for - you'd likely prefer a more specialized implementation tailored to your specific needs.
 
-`Flow` is designed to be more generic, modeling communication between two abstract endpoints that alternate ownership.
-Rather than assigning fixed roles like Source and Sink, `Flow` promotes a ping-pong interaction where each side takes turns controlling the stream.
+`AsyncStepper` is designed to be more generic, modeling communication between two abstract endpoints that alternate ownership.
+Rather than assigning fixed roles like Source and Sink, `AsyncStepper` promotes a ping-pong interaction where each side takes turns controlling the stream.
 
 ### Comparisons
 

@@ -1,5 +1,5 @@
 import { type MapFunction } from '@xstd/functional';
-import { type FlowMapArgumentsFunction } from '../flow-map-arguments-function.js';
+import { type FlowMapArgumentsFunction } from '../flow-map-arguments-function.ts';
 
 /**
  * Used to map the first argument of a Flow to another one.

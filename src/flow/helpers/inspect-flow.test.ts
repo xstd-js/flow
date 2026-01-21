@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { Flow } from '../flow.js';
-import { inspectFlow } from './inspect-flow.js';
+import { Flow } from '../flow.ts';
+import { inspectFlow } from './inspect-flow.ts';
 
 describe('inspectFlow', () => {
   let controller: AbortController;
