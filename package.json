@@ -1,6 +1,6 @@
 {
   "name": "@xstd/flow",
-  "version": "0.10.1",
+  "version": "0.12.0",
   "type": "module",
   "main": "./index.js",
   "scripts": {
@@ -10,9 +10,9 @@
     "fb:test:coverage": "vitest run --coverage",
     "fb:bench": "vitest bench",
     "fb:typedoc": "typedoc --options typedoc.json --tsconfig tsconfig.json",
-    "fb:prod": "node fabrique/actions/cli/build-and-publish.cli.js --mode prod",
+    "fb:prod": "node --env-file='.env' fabrique/actions/cli/build-and-publish.cli.js --mode prod",
     "fb:dev": "node fabrique/actions/cli/build-and-publish.cli.js --mode dev",
-    "fb:rc": "node fabrique/actions/cli/build-and-publish.cli.js --mode rc",
+    "fb:rc": "node --env-file='.env' fabrique/actions/cli/build-and-publish.cli.js --mode rc",
     "fb:node:dev": "node --experimental-strip-types --watch src/main.ts",
     "fb:node:dev:inspect": "node --experimental-strip-types --watch --inspect src/main.ts"
   },
@@ -30,15 +30,15 @@
     "url": "git+https://github.com/xstd-js/flow.git"
   },
   "devDependencies": {
-    "@types/node": "^25.0.9",
-    "@vitest/coverage-istanbul": "^4.0.17",
-    "prettier": "^3.8.0",
+    "@types/node": "^25.6.2",
+    "@vitest/coverage-istanbul": "^4.1.5",
+    "prettier": "^3.8.3",
     "prettier-plugin-organize-imports": "^4.3.0",
-    "typedoc": "^0.28.16",
-    "typescript": "^5.9.3",
-    "vitest": "^4.0.17"
+    "typedoc": "^0.28.19",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
   },
-  "packageManager": "yarn@4.12.0",
+  "packageManager": "yarn@4.14.1",
   "fabrique": {
     "version": "1.1.2",
     "type": "lib"
@@ -47,9 +47,9 @@
     "@xstd/abortable": "^1.2.3",
     "@xstd/disposable": "^0.1.1",
     "@xstd/enum": "^1.1.0",
-    "@xstd/enumerable": "^0.9.0",
+    "@xstd/enumerable": "^0.10.0",
     "@xstd/equal-function": "^0.0.1",
-    "@xstd/functional": "^0.3.3",
+    "@xstd/functional": "^0.3.4",
     "@xstd/none": "^1.0.0"
   }
 }

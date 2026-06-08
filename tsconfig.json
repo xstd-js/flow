@@ -3,16 +3,10 @@
     /* Build */
     "target": "ESNext",
     "module": "NodeNext",
-    "lib": [
-      "ESNext",
-      "DOM"
-    ],
-    "types": [
-      "node"
-    ],
-    "typeRoots": [
-      "node_modules/@types"
-    ],
+    "lib": ["ESNext", "DOM"],
+    "rootDir": "src",
+    "types": ["node"],
+    "typeRoots": ["node_modules/@types"],
     "useDefineForClassFields": true,
     "skipLibCheck": true,
     "declaration": false,
@@ -22,7 +16,6 @@
     "noEmitHelpers": false,
     "pretty": true,
     "removeComments": false,
-    "downlevelIteration": false,
     "resolveJsonModule": true,
     "sourceMap": true,
     "stripInternal": false,
@@ -61,9 +54,7 @@
     "strictFunctionTypes": true,
     "strictNullChecks": true,
     "strictPropertyInitialization": true,
-    "erasableSyntaxOnly": true,
+    "erasableSyntaxOnly": true
   },
-  "include": [
-    "src/**/*.ts"
-  ]
+  "include": ["src/**/*.ts"]
 }

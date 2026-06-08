@@ -48,7 +48,9 @@ export class Flow<GValue, GArguments extends readonly unknown[] = []> extends As
    * Creates a `Flow` from a push-based data source.
    *
    * @template GValue The type of values emitted by the flow.
-   * @param {InitPushSource<GValue>} init - A function to initialize the push-based data source. The function receives a controller object that includes methods for pushing the next value, signaling an error, or completing the stream, as well as an `AbortSignal` for handling cancellations.
+   * @param {InitPushSource<GValue>} init - A function to initialize the push-based data source.
+   *    The function receives a controller object that includes methods for pushing the next value, signaling an error, or completing the stream, as well as an `AbortSignal` for handling cancellations.
+   *    The function may return a Promise: it's a good opportunity to _open_ async resources.
    * @returns {Flow<GValue, [options?: PushToPullOptions]>} A `Flow` that converts the push-based data source into a pull-based stream.
    */
   static fromPushSource<GValue>(
@@ -1209,6 +1211,19 @@ export class Flow<GValue, GArguments extends readonly unknown[] = []> extends As
       }
     }
     return undefined;
+  }
+
+  /**
+   * Exhausts the iterable returned by the `open` method, consuming all items until completion.
+   *
+   * @experimental
+   * @param {AbortSignal} signal - An AbortSignal to allow for the operation to be canceled.
+   * @param {...GArguments} args - Additional arguments to pass to the flow.
+   * @returns {Promise<void>} A promise that resolves when the flow is fully consumed.
+   */
+  async consume(signal: AbortSignal, ...args: GArguments): Promise<void> {
+    for await (const _ of this.open(signal, ...args)) {
+    }
   }
 
   /* CAST TO OTHER KIND OF STREAMS */

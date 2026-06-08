@@ -390,6 +390,19 @@ describe('Flow', () => {
         ).toEqual([0, 1, 2]);
       });
 
+      it('should support ReadableStream', async () => {
+        const stream = new ReadableStream<number>({
+          start(controller) {
+            controller.enqueue(0);
+            controller.enqueue(1);
+            controller.enqueue(2);
+            controller.close();
+          },
+        });
+
+        expect(await Flow.fromAsyncIterable(stream).toArray(controller.signal)).toEqual([0, 1, 2]);
+      });
+
       it('should support throw', async () => {
         let caught: unknown = NONE;
 
@@ -1027,6 +1040,23 @@ describe('Flow', () => {
             (value: number) => value === 3,
           ),
         ).toBe(undefined);
+      });
+    });
+
+    describe('consume', () => {
+      it('should consume the flow', async () => {
+        let consumed: boolean = false;
+
+        await expect(
+          new Flow(async function* () {
+            yield 0;
+            yield 1;
+            yield 2;
+            consumed = true;
+          }).consume(controller.signal),
+        ).resolves.toBeUndefined();
+
+        expect(consumed).toBe(true);
       });
     });
 

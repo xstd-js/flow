@@ -1,9 +1,10 @@
+/* istanbul ignore file -- @preserve */
+
 import { type FlowInspectOptions } from '../types/methods/inspect/flow-inspect-options.ts';
 
 const COLOR_SCHEME =
-  typeof window !== 'undefined' &&
-  /* istanbul ignore next */ window.matchMedia('(prefers-color-scheme: dark)').matches
-    ? /* istanbul ignore next */ {
+  typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
+    ? {
         light: '75%',
         open: '#35e062',
         next: '#70bcff',
