@@ -960,7 +960,7 @@ __metadata:
     "@xstd/equal-function": "npm:^0.0.1"
     "@xstd/functional": "npm:^0.3.4"
     "@xstd/none": "npm:^1.0.0"
-    fabrique: "npm:2.0.1"
+    fabrique: "npm:2.0.2"
     prettier: "npm:^3.8.4"
     prettier-plugin-organize-imports: "npm:^4.3.0"
     typedoc: "npm:^0.28.19"
@@ -1316,16 +1316,17 @@ __metadata:
   languageName: node
   linkType: hard
 
-"fabrique@npm:2.0.1":
-  version: 2.0.1
-  resolution: "fabrique@npm:2.0.1"
+"fabrique@npm:2.0.2":
+  version: 2.0.2
+  resolution: "fabrique@npm:2.0.2"
   dependencies:
     "@inquirer/prompts": "npm:^8.5.2"
     chalk: "npm:^5.6.2"
     commander: "npm:^15.0.0"
+    zod: "npm:^4.4.3"
   bin:
     fabrique: src/cli/cli.js
-  checksum: 10c0/5f71d56b4b03ac4b70c69e9513e21ebf455c2b3970f9b5cabb2721f7bc212241bcc43789e1646182e599b61a2d0ea070ebc3bde012cb9c058554cb05c0e38a8b
+  checksum: 10c0/82d4d2a89b256d10c7029a071dce692e26f210ec8162d34f13b0344fcb64dfdcfd139f77538830bfb98579e72ae21fbf324f00f58c7bcc3609c9c3b664449562
   languageName: node
   linkType: hard
 
@@ -2682,5 +2683,12 @@ __metadata:
   bin:
     yaml: bin.mjs
   checksum: 10c0/0a33a1fa28d4bc79f61a12ec7ef7a2bce0ce5f8e80c6eaecfb4a0c88c08767dd1ede372b6a3bcd70891213b8c9f3169b355c97e77026d3b3459e10d2cccaef1e
+  languageName: node
+  linkType: hard
+
+"zod@npm:^4.4.3":
+  version: 4.4.3
+  resolution: "zod@npm:4.4.3"
+  checksum: 10c0/7ea31b558e88f9faf44f31dd185e2e1cbf51fed3081787fb96cc2534749b50c0acfc6da7f0922a7353ed092dd358c7d50c28ea96c94d04af64191bd33152eca3
   languageName: node
   linkType: hard

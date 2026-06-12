@@ -37,7 +37,7 @@
   "devDependencies": {
     "@types/node": "^25.9.3",
     "@vitest/coverage-istanbul": "^4.1.8",
-    "fabrique": "2.0.1",
+    "fabrique": "2.0.2",
     "prettier": "^3.8.4",
     "prettier-plugin-organize-imports": "^4.3.0",
     "typedoc": "^0.28.19",
@@ -55,7 +55,7 @@
     "@xstd/none": "^1.0.0"
   },
   "fabrique": {
-    "version": "2.0.1",
+    "version": "2.0.2",
     "type": "lib"
   }
 }
